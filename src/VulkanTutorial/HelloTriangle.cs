@@ -23,6 +23,9 @@ namespace VulkanTutorial
 
         private Instance _instance;
         private DebugUtilsMessengerEXT _debugMessenger;
+        private PhysicalDevice _physicalDevice;
+        private Device _device;
+        private Queue _graphicsQueue;
 
         public HelloTriangle(bool enableValidationLayers)
         {
@@ -33,7 +36,111 @@ namespace VulkanTutorial
         {
             CreateVulkanInstance();
             SetupDebugMessenger();
+            PickPhysicalDevice();
+            CreateLogicalDevice();
         }
+
+        private void CreateLogicalDevice()
+        {
+            var queueFamilyIndices = FindQueueFamilies(_physicalDevice);
+
+            var queuePriority = 1.0f;
+            
+            var deviceQueueCreateInfo = new DeviceQueueCreateInfo(
+                queueFamilyIndex: queueFamilyIndices.GraphicsFamily.Value,
+                queueCount: 1,
+                pQueuePriorities: &queuePriority
+            );
+
+            var deviceFeatures = new PhysicalDeviceFeatures();
+
+            using var validationLayers = new StringArrayPtrWrapper(_enableValidationLayers ? ValidationLayers : Array.Empty<string>());
+
+            var deviceCreateInfo = new DeviceCreateInfo(
+                pQueueCreateInfos: &deviceQueueCreateInfo,
+                queueCreateInfoCount: 1,
+                pEnabledFeatures: &deviceFeatures,
+                enabledLayerCount: (uint)validationLayers.Count,
+                ppEnabledLayerNames: validationLayers.StringArrayPtr
+            );
+            
+            VkCheck.Success(_vk.CreateDevice(_physicalDevice, &deviceCreateInfo, null, out _device), "Failed to create logical device");
+            
+            _vk.GetDeviceQueue(_device, queueFamilyIndices.GraphicsFamily.Value, 0, out _graphicsQueue);
+        }
+
+        private void PickPhysicalDevice()
+        {
+            uint deviceCount;
+            VkCheck.Success(_vk.EnumeratePhysicalDevices(_instance, &deviceCount, null));
+
+            if (deviceCount == 0)
+            {
+                throw new InvalidOperationException("Could not find a graphics card with vulkan support");
+            }
+
+            var physicalDevices = stackalloc PhysicalDevice[(int) deviceCount];
+            
+            VkCheck.Success(_vk.EnumeratePhysicalDevices(_instance, &deviceCount, physicalDevices));
+
+            for (var i = 0; i < deviceCount; i++)
+            {
+                ref var current = ref physicalDevices[i];
+                var queueFamilyIndices = IsDeviceSuitable(current);
+                if (queueFamilyIndices.HasValue)
+                {
+                    _physicalDevice = current;
+                    return;
+                }
+            }
+
+            throw new InvalidOperationException("Could not find a suitable GPU");
+        }
+
+        private QueueFamilyIndices? IsDeviceSuitable(in PhysicalDevice physicalDevice)
+        {
+            var indices = FindQueueFamilies(physicalDevice);
+
+            return indices.IsComplete() ? indices : null;
+        }
+
+        private struct QueueFamilyIndices
+        {
+            public uint? GraphicsFamily;
+
+            public bool IsComplete()
+            {
+                return GraphicsFamily.HasValue;
+            }
+        }
+
+        private  QueueFamilyIndices FindQueueFamilies(in PhysicalDevice physicalDevice)
+        {
+            uint queueFamilyCount = 0;
+            _vk.GetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, null);
+
+            var queueFamilies = stackalloc QueueFamilyProperties[(int) queueFamilyCount];
+            _vk.GetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies);
+
+            QueueFamilyIndices queueFamilyIndices = new QueueFamilyIndices();
+
+            for (uint i = 0; i < queueFamilyCount; ++i)
+            {
+                ref var queueFamily = ref queueFamilies[i];
+
+                if ((queueFamily.QueueFlags & QueueFlags.QueueGraphicsBit) != 0)
+                {
+                    queueFamilyIndices.GraphicsFamily = i;
+                }
+
+                if (queueFamilyIndices.IsComplete())
+                {
+                    break;
+                }
+            }
+
+            return  queueFamilyIndices;
+        }  
 
         private void CreateVulkanInstance()
         {
@@ -125,6 +232,8 @@ namespace VulkanTutorial
 
         protected override void OnClose()
         {
+            _vk.DestroyDevice(_device, null);
+            
             if (_debugMessenger.Handle != 0)
             {
                 _extDebugUtils.DestroyDebugUtilsMessenger(_instance, _debugMessenger, null);
@@ -148,9 +257,7 @@ namespace VulkanTutorial
             }
 
             var createInfo = new DebugUtilsMessengerCreateInfoEXT(
-                messageSeverity: DebugUtilsMessageSeverityFlagsEXT.DebugUtilsMessageSeverityVerboseBitExt |
-                                 DebugUtilsMessageSeverityFlagsEXT.DebugUtilsMessageSeverityInfoBitExt |
-                                 DebugUtilsMessageSeverityFlagsEXT.DebugUtilsMessageSeverityWarningBitExt |
+                messageSeverity: DebugUtilsMessageSeverityFlagsEXT.DebugUtilsMessageSeverityWarningBitExt |
                                  DebugUtilsMessageSeverityFlagsEXT.DebugUtilsMessageSeverityErrorBitExt,
                 messageType: DebugUtilsMessageTypeFlagsEXT.DebugUtilsMessageTypeGeneralBitExt |
                              DebugUtilsMessageTypeFlagsEXT.DebugUtilsMessageTypePerformanceBitExt |
@@ -161,7 +268,7 @@ namespace VulkanTutorial
             VkCheck.Success(_extDebugUtils.CreateDebugUtilsMessenger(_instance, &createInfo, null, out _debugMessenger), "Could not create debug utils messenger");
         }
         
-        private unsafe uint DebugCallback(DebugUtilsMessageSeverityFlagsEXT messageSeverity, DebugUtilsMessageTypeFlagsEXT messageTypes, DebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData)
+        private uint DebugCallback(DebugUtilsMessageSeverityFlagsEXT messageSeverity, DebugUtilsMessageTypeFlagsEXT messageTypes, DebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData)
         {
             var message = StringUtils.GetString(pCallbackData->PMessage);
 
