@@ -1,6 +1,8 @@
 ﻿using System;
+using Silk.NET.Core.Contexts;
 using Silk.NET.Input;
 using Silk.NET.Maths;
+using Silk.NET.Vulkan;
 using Silk.NET.Windowing;
 
 namespace VulkanTutorial
@@ -8,6 +10,9 @@ namespace VulkanTutorial
     public abstract class MainWindow
     {
         private readonly IWindow _window;
+
+        public int Width => _window.Size.X;
+        public int Height => _window.Size.Y;
         
         public MainWindow()
         {
@@ -16,9 +21,11 @@ namespace VulkanTutorial
             options.Title = "Vulkan Tutorial";
 
             _window = Window.Create(options);
-            
+
             _window.Load += OnLoad;
             _window.Closing += OnClose;
+            
+            _window.Initialize();
         }
 
         public void Run()
@@ -49,16 +56,29 @@ namespace VulkanTutorial
             }
         }
 
+        private IVkSurface VkSurface
+        {
+            get
+            {
+                var surface = _window.VkSurface;
+
+                if (surface == null)
+                {
+                    throw new InvalidOperationException("Window has no VkSurface");
+                }
+
+                return surface;
+            }
+        } 
+
         protected unsafe byte** VkGetRequiredExtensions(out uint count)
         {
-            var surface = _window.VkSurface;
-
-            if (surface == null)
-            {
-                throw new InvalidOperationException("Window has no VkSurface");
-            }
-
-            return surface.GetRequiredExtensions(out count);
+            return VkSurface.GetRequiredExtensions(out count);
+        }
+        
+        protected unsafe SurfaceKHR CreateSurface(Instance instance)
+        {
+            return VkSurface.Create<AllocationCallbacks>(instance.ToHandle(), null).ToSurface();
         }
     }
 }
