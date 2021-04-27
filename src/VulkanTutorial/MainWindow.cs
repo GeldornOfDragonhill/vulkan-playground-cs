@@ -24,12 +24,16 @@ namespace VulkanTutorial
 
             _window.Load += OnLoad;
             _window.Closing += OnClose;
-            
-            _window.Initialize();
         }
+
+        protected abstract void Render(double _);
 
         public void Run()
         {
+            _window.Initialize();
+            
+            _window.Render += Render;
+            
             _window.Run();
         }
 
