@@ -23,6 +23,7 @@ namespace VulkanTutorial
             _window = Window.Create(options);
 
             _window.Load += OnLoad;
+            _window.Resize += OnResize;
             _window.Closing += OnClose;
         }
 
@@ -47,12 +48,11 @@ namespace VulkanTutorial
             }
         }
         
-        protected virtual void OnClose()
-        {
-            
-        }
+        protected virtual void OnResize(Vector2D<int> obj) { }
+        
+        protected virtual void OnClose() { }
 
-        protected void OnKeyDown(IKeyboard keyboard, Key key, int code)
+        protected virtual void OnKeyDown(IKeyboard keyboard, Key key, int code)
         {
             if (key == Key.Escape)
             {

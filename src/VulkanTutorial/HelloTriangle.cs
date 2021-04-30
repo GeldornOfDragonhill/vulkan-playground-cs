@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Silk.NET.Core;
+using Silk.NET.Maths;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
@@ -69,6 +70,10 @@ namespace VulkanTutorial
         private KhrSurface _extKhrSurface;
         private KhrSwapchain _extKhrSwapChain;
 
+        private CachedDeviceInfo _cachedDeviceInfo;
+        private bool _framebufferResized = false;
+        private bool _pauseRendering = false;
+
         private Instance _instance;
         private DebugUtilsMessengerEXT _debugMessenger;
         private SurfaceKHR _surface;
@@ -112,18 +117,44 @@ namespace VulkanTutorial
             CreateVulkanInstance();
             SetupDebugMessenger();
             _surface = CreateSurface(_instance);
-            PickPhysicalDevice(out var cachedDeviceInfo);
-            CreateLogicalDevice(cachedDeviceInfo);
-            CreateSwapChain(cachedDeviceInfo);
-            CreateImageViews(cachedDeviceInfo);
-            CreateRenderPass();
-            CreateGraphicsPipeline(cachedDeviceInfo);
-            CreateFramebuffers();
-            CreateCommandPool(cachedDeviceInfo);
-            CreateCommandBuffers();
+            PickPhysicalDevice(out _cachedDeviceInfo);
+            CreateLogicalDevice();
+            
+            AssembleSwapChain();
+            
             CreateSyncObjects();
         }
-        
+
+        private void AssembleSwapChain(bool recreate = false)
+        {
+            if (recreate)
+            {
+                CleanupSwapChain();
+            
+                UpdateSurfaceCapabilities(_physicalDevice, _cachedDeviceInfo);
+            }
+
+            if (_cachedDeviceInfo.Extent2D.Width == 0 || _cachedDeviceInfo.Extent2D.Height == 0)
+            {
+                //Wait until window is valid again
+                _pauseRendering = true;
+                return;
+            }
+
+            _pauseRendering = false;
+            
+            CreateSwapChain();
+            CreateImageViews();
+            CreateRenderPass();
+            CreateGraphicsPipeline();
+            CreateFramebuffers();
+            if (!recreate)
+            {
+                CreateCommandPool();
+            }
+            CreateCommandBuffers();
+        }
+
         private void CreateVulkanInstance()
         {
             using var applicationName = new StringPtrWrapper(GetType().Name);
@@ -404,10 +435,18 @@ namespace VulkanTutorial
                     break;
                 }
             }
+
+            UpdateSurfaceCapabilities(physicalDevice, cachedDeviceInfo);
+
+            return true;
+        }
+
+        private void UpdateSurfaceCapabilities(PhysicalDevice physicalDevice, CachedDeviceInfo cachedDeviceInfo)
+        {
+            VkCheck.Success(_extKhrSurface.GetPhysicalDeviceSurfaceCapabilities(physicalDevice, _surface, out cachedDeviceInfo.SurfaceCapabilities));
             
-
-            VkCheck.Success(_extKhrSurface.GetPhysicalDeviceSurfaceCapabilities(physicalDevice, _surface, out var surfaceCapabilities));
-
+            ref var surfaceCapabilities = ref cachedDeviceInfo.SurfaceCapabilities;
+            
             if (surfaceCapabilities.CurrentExtent.Width != uint.MaxValue)
             {
                 cachedDeviceInfo.Extent2D = surfaceCapabilities.CurrentExtent;
@@ -421,17 +460,13 @@ namespace VulkanTutorial
 
                 cachedDeviceInfo.Extent2D = actualExtend;
             }
-            
-            cachedDeviceInfo.SurfaceCapabilities = surfaceCapabilities;
-
-            return true;
         }
         
-        private void CreateLogicalDevice(CachedDeviceInfo cachedDeviceInfo)
+        private void CreateLogicalDevice()
         {
             var queuePriority = 1.0f;
 
-            var uniqueIndices = cachedDeviceInfo.QueueFamilyIndices.GetUniqueIndices();
+            var uniqueIndices = _cachedDeviceInfo.QueueFamilyIndices.GetUniqueIndices();
 
             var deviceQueueCreateInfos = stackalloc DeviceQueueCreateInfo[uniqueIndices.Count];
 
@@ -464,13 +499,13 @@ namespace VulkanTutorial
             
             VkCheck.Success(_vk.CreateDevice(_physicalDevice, &deviceCreateInfo, null, out _device), "Failed to create logical device");
             
-            _vk.GetDeviceQueue(_device, cachedDeviceInfo.QueueFamilyIndices.GraphicsFamily.Value, 0, out _graphicsQueue);
-            _vk.GetDeviceQueue(_device, cachedDeviceInfo.QueueFamilyIndices.PresentFamily.Value, 0, out _presentQueue);
+            _vk.GetDeviceQueue(_device, _cachedDeviceInfo.QueueFamilyIndices.GraphicsFamily.Value, 0, out _graphicsQueue);
+            _vk.GetDeviceQueue(_device, _cachedDeviceInfo.QueueFamilyIndices.PresentFamily.Value, 0, out _presentQueue);
         }
         
-        private void CreateSwapChain(CachedDeviceInfo cachedDeviceInfo)
+        private void CreateSwapChain()
         {
-            ref var surfaceCapabilities = ref cachedDeviceInfo.SurfaceCapabilities;
+            ref var surfaceCapabilities = ref _cachedDeviceInfo.SurfaceCapabilities;
             
             var swapChainImageCount = surfaceCapabilities.MinImageCount + 1;
 
@@ -482,19 +517,19 @@ namespace VulkanTutorial
             var createInfo = new SwapchainCreateInfoKHR(
                 surface: _surface,
                 minImageCount: swapChainImageCount,
-                imageFormat: cachedDeviceInfo.SurfaceFormat.Format,
-                imageColorSpace: cachedDeviceInfo.SurfaceFormat.ColorSpace,
-                imageExtent: cachedDeviceInfo.Extent2D,
+                imageFormat: _cachedDeviceInfo.SurfaceFormat.Format,
+                imageColorSpace: _cachedDeviceInfo.SurfaceFormat.ColorSpace,
+                imageExtent: _cachedDeviceInfo.Extent2D,
                 imageArrayLayers: 1,
                 imageUsage: ImageUsageFlags.ImageUsageColorAttachmentBit,
                 preTransform: surfaceCapabilities.CurrentTransform,
                 compositeAlpha: CompositeAlphaFlagsKHR.CompositeAlphaOpaqueBitKhr,
-                presentMode: cachedDeviceInfo.PresentMode,
+                presentMode: _cachedDeviceInfo.PresentMode,
                 clipped: Vk.True
             );
 
 
-            ref var indices = ref cachedDeviceInfo.QueueFamilyIndices;
+            ref var indices = ref _cachedDeviceInfo.QueueFamilyIndices;
             if (indices.GraphicsFamily.Value == indices.PresentFamily.Value)
             {
                 createInfo.ImageSharingMode = SharingMode.Exclusive;
@@ -524,11 +559,11 @@ namespace VulkanTutorial
                 VkCheck.Success(_extKhrSwapChain.GetSwapchainImages(_device, _swapChain, &swapChainImageCount, swapChainImagesPtr));
             }
 
-            _swapChainImageFormat = cachedDeviceInfo.SurfaceFormat.Format;
-            _swapChainExtent = cachedDeviceInfo.Extent2D;
+            _swapChainImageFormat = _cachedDeviceInfo.SurfaceFormat.Format;
+            _swapChainExtent = _cachedDeviceInfo.Extent2D;
         }
 
-        private void CreateImageViews(CachedDeviceInfo cachedDeviceInfo)
+        private void CreateImageViews()
         {
             _swapChainImageViews = new ImageView[_swapChainImages.Length];
 
@@ -541,7 +576,7 @@ namespace VulkanTutorial
                     var imageViewCreateInfo = new ImageViewCreateInfo(
                         image: swapChainImages[i],
                         viewType: ImageViewType.ImageViewType2D,
-                        format: cachedDeviceInfo.SurfaceFormat.Format,
+                        format: _cachedDeviceInfo.SurfaceFormat.Format,
                         components: new ComponentMapping(
                             r: ComponentSwizzle.Identity,
                             g: ComponentSwizzle.Identity,
@@ -604,7 +639,7 @@ namespace VulkanTutorial
             VkCheck.Success(_vk.CreateRenderPass(_device, &renderPassInfo, null, out _renderPass), "Failed to create render pass");
         }
         
-        private void CreateGraphicsPipeline(CachedDeviceInfo cachedDeviceInfo)
+        private void CreateGraphicsPipeline()
         {
             var vertShaderModule = CreateShaderModule("shader:/Shaders/shader.vert.spv");
             var fragShaderModule = CreateShaderModule("shader:/Shaders/shader.frag.spv");
@@ -644,7 +679,7 @@ namespace VulkanTutorial
                 maxDepth: 1f
             );
 
-            var scissor = new Rect2D(new Offset2D(0, 0), cachedDeviceInfo.Extent2D);
+            var scissor = new Rect2D(new Offset2D(0, 0), _cachedDeviceInfo.Extent2D);
 
             var viewportState = new PipelineViewportStateCreateInfo(
                 viewportCount: 1,
@@ -772,10 +807,10 @@ namespace VulkanTutorial
             }
         }
         
-        private void CreateCommandPool(CachedDeviceInfo cachedDeviceInfo)
+        private void CreateCommandPool()
         {
             var poolInfo = new CommandPoolCreateInfo(
-                queueFamilyIndex: cachedDeviceInfo.QueueFamilyIndices.GraphicsFamily,
+                queueFamilyIndex: _cachedDeviceInfo.QueueFamilyIndices.GraphicsFamily,
                 flags: 0
             );
             
@@ -850,12 +885,32 @@ namespace VulkanTutorial
         
         protected override void Render(double _)
         {
+            if (_pauseRendering)
+            {
+                if (_framebufferResized)
+                {
+                    _framebufferResized = true;
+                    AssembleSwapChain(true);
+                }
+                return;
+            }
+            
             var inFlightFence = _inFlightFences[_currentFrame]; 
             
             VkCheck.Success(_vk.WaitForFences(_device, 1, &inFlightFence, Vk.True, uint.MaxValue));
 
             uint imageIndex;
-            VkCheck.Success(_extKhrSwapChain.AcquireNextImage(_device, _swapChain, ulong.MaxValue, _imageAvailableSemaphores[_currentFrame], default, &imageIndex), "Failed to acquire next image");
+            var result = _extKhrSwapChain.AcquireNextImage(_device, _swapChain, ulong.MaxValue, _imageAvailableSemaphores[_currentFrame], default, &imageIndex);
+
+            if (result == Result.ErrorOutOfDateKhr)
+            {
+                AssembleSwapChain(true);
+                return;
+            }
+            if (result != Result.Success && result != Result.SuboptimalKhr)
+            {
+                throw new InvalidOperationException("Failed to acquire swap chain image");
+            }
 
             var imageInFlight = _imagesInFlight[imageIndex];
             if (imageInFlight.Handle != 0)
@@ -897,14 +952,66 @@ namespace VulkanTutorial
                 pResults: null
             );
             
-            VkCheck.Success(_extKhrSwapChain.QueuePresent(_presentQueue, &presentInfo));
+            result = _extKhrSwapChain.QueuePresent(_presentQueue, &presentInfo);
+
+            if (result is Result.ErrorOutOfDateKhr or Result.SuboptimalKhr || _framebufferResized)
+            {
+                _framebufferResized = false;
+                
+                AssembleSwapChain(true);
+            }
+            else if (result is not Result.Success)
+            {
+                throw new InvalidOperationException("Failed to present swap chain image");
+            }
 
             _currentFrame = (_currentFrame + 1) % MaxFramesInFlight;
+        }
+
+        private void CleanupSwapChain()
+        {
+            //Check if swap chain exists
+            if (_swapChainFramebuffers == null)
+            {
+                return;
+            }
+            
+            _vk.DeviceWaitIdle(_device);
+            
+            foreach (var swapChainFramebuffer in _swapChainFramebuffers)
+            {
+                _vk.DestroyFramebuffer(_device, swapChainFramebuffer, null);
+            }
+            _swapChainFramebuffers = null;
+
+            fixed (CommandBuffer* commandBuffersPtr = _commandBuffers)
+            {
+                _vk.FreeCommandBuffers(_device, _commandPool, (uint)_commandBuffers.Length, commandBuffersPtr);
+            }
+            _commandBuffers = null;
+            
+            _vk.DestroyPipeline(_device, _graphicsPipeline, null);
+            _graphicsPipeline = default;
+            
+            _vk.DestroyPipelineLayout(_device, _pipelineLayout, null);
+            _pipelineLayout = default;
+            
+            _vk.DestroyRenderPass(_device, _renderPass, null);
+            _renderPass = default;
+            
+            foreach (var swapChainImageView in _swapChainImageViews)
+            {
+                _vk.DestroyImageView(_device, swapChainImageView, null);
+            }
+            _swapChainImageViews = null;
+            
+            _extKhrSwapChain.DestroySwapchain(_device, _swapChain, null);
+            _swapChain = default;
         }
         
         protected override void OnClose()
         {
-            _vk.DeviceWaitIdle(_device);
+            CleanupSwapChain();
 
             foreach (var renderFinishedSemaphore in _renderFinishedSemaphores)
             {
@@ -922,25 +1029,7 @@ namespace VulkanTutorial
             }
             
             _vk.DestroyCommandPool(_device, _commandPool, null);
-            
-            foreach (var swapChainFramebuffer in _swapChainFramebuffers)
-            {
-                _vk.DestroyFramebuffer(_device, swapChainFramebuffer, null);
-            }
-            
-            _vk.DestroyPipeline(_device, _graphicsPipeline, null);
-            
-            _vk.DestroyPipelineLayout(_device, _pipelineLayout, null);
-            
-            _vk.DestroyRenderPass(_device, _renderPass, null);
-            
-            foreach (var swapChainImageView in _swapChainImageViews)
-            {
-                _vk.DestroyImageView(_device, swapChainImageView, null);
-            }
-            
-            _extKhrSwapChain.DestroySwapchain(_device, _swapChain, null);
-            
+
             _vk.DestroyDevice(_device, null);
             
             _extKhrSurface.DestroySurface(_instance, _surface, null);
@@ -955,5 +1044,11 @@ namespace VulkanTutorial
             base.OnClose();
         }
 
+        protected override void OnResize(Vector2D<int> obj)
+        {
+            base.OnResize(obj);
+
+            _framebufferResized = true;
+        }
     }
 }
