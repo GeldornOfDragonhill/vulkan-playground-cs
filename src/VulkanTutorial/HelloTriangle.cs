@@ -2,12 +2,15 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Silk.NET.Core;
 using Silk.NET.Maths;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
 using VulkanTutorial.Tools;
+using Buffer = Silk.NET.Vulkan.Buffer;
 
 namespace VulkanTutorial
 {
@@ -48,6 +51,41 @@ namespace VulkanTutorial
             public SurfaceCapabilitiesKHR SurfaceCapabilities;
             public Extent2D Extent2D;
         }
+        
+        struct Vertex
+        {
+            public Vector2D<float> Pos;
+            public Vector3D<float> Color;
+
+            public static VertexInputBindingDescription BindingDescription => new VertexInputBindingDescription(
+                binding: 0,
+                stride: (uint)sizeof(Vertex),
+                inputRate: VertexInputRate.Vertex
+            );
+
+            public static VertexInputAttributeDescription[] AttributeDescriptions => new VertexInputAttributeDescription[]
+                {
+                    new (
+                        binding: 0,
+                        location: 0,
+                        format: Format.R32G32Sfloat,
+                        offset: (uint) Marshal.OffsetOf<Vertex>(nameof(Pos))
+                    ),
+                    new (
+                        binding: 0,
+                        location: 1,
+                        format: Format.R32G32B32Sfloat,
+                        offset: (uint) Marshal.OffsetOf<Vertex>(nameof(Color))
+                    )
+                };
+        }
+
+        private static readonly Vertex[] Vertices = 
+            {
+                new Vertex {Pos = new Vector2D<float> {X = 0.0f, Y = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 1.0f, Z = 1.0f}},
+                new Vertex {Pos = new Vector2D<float> {X = 0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 1.0f, Z = 0.0f}},
+                new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 0.0f, Z = 1.0f}}
+            };
         
         private const string EngineName = "N/A";
 
@@ -91,6 +129,8 @@ namespace VulkanTutorial
         private Pipeline _graphicsPipeline;
         private Framebuffer[] _swapChainFramebuffers;
         private CommandPool _commandPool;
+        private Buffer _vertexBuffer;
+        private DeviceMemory _vertexBufferMemory;
         private CommandBuffer[] _commandBuffers;
 
         private readonly Semaphore[] _imageAvailableSemaphores = new Semaphore[MaxFramesInFlight];
@@ -119,7 +159,7 @@ namespace VulkanTutorial
             _surface = CreateSurface(_instance);
             PickPhysicalDevice(out _cachedDeviceInfo);
             CreateLogicalDevice();
-            
+
             AssembleSwapChain();
             
             CreateSyncObjects();
@@ -151,6 +191,7 @@ namespace VulkanTutorial
             if (!recreate)
             {
                 CreateCommandPool();
+                CreateVertexBuffer();
             }
             CreateCommandBuffers();
         }
@@ -660,93 +701,102 @@ namespace VulkanTutorial
                 pName: mainName.StringPtr
             );
 
-            var vertexInputInfo = new PipelineVertexInputStateCreateInfo(
-                vertexBindingDescriptionCount: 0,
-                vertexAttributeDescriptionCount: 0
-            );
+            var bindingDescription = Vertex.BindingDescription;
+            var attributeDescriptions = Vertex.AttributeDescriptions;
 
-            var inputAssembly = new PipelineInputAssemblyStateCreateInfo(
-                topology: PrimitiveTopology.TriangleList,
-                primitiveRestartEnable: Vk.False
-            );
+            fixed (VertexInputAttributeDescription* attributeDescriptionsPtr = attributeDescriptions)
+            {
+                var vertexInputInfo = new PipelineVertexInputStateCreateInfo(
+                    vertexBindingDescriptionCount: 1,
+                    vertexAttributeDescriptionCount: (uint) attributeDescriptions.Length,
+                    pVertexBindingDescriptions: &bindingDescription,
+                    pVertexAttributeDescriptions: attributeDescriptionsPtr
+                );
 
-            var viewport = new Viewport(
-                x: 0f,
-                y: 0f,
-                width: (float)_swapChainExtent.Width,
-                height: (float)_swapChainExtent.Height,
-                minDepth: 0f,
-                maxDepth: 1f
-            );
 
-            var scissor = new Rect2D(new Offset2D(0, 0), _cachedDeviceInfo.Extent2D);
+                var inputAssembly = new PipelineInputAssemblyStateCreateInfo(
+                    topology: PrimitiveTopology.TriangleList,
+                    primitiveRestartEnable: Vk.False
+                );
 
-            var viewportState = new PipelineViewportStateCreateInfo(
-                viewportCount: 1,
-                pViewports: &viewport,
-                scissorCount: 1,
-                pScissors: &scissor
-            );
+                var viewport = new Viewport(
+                    x: 0f,
+                    y: 0f,
+                    width: (float) _swapChainExtent.Width,
+                    height: (float) _swapChainExtent.Height,
+                    minDepth: 0f,
+                    maxDepth: 1f
+                );
 
-            var rasterizer = new PipelineRasterizationStateCreateInfo(
-                depthClampEnable: Vk.False,
-                rasterizerDiscardEnable: Vk.False,
-                polygonMode: PolygonMode.Fill,
-                lineWidth: 1f,
-                cullMode: CullModeFlags.CullModeBackBit,
-                frontFace: FrontFace.Clockwise,
-                depthBiasEnable: Vk.False,
-                depthBiasConstantFactor: 0f,
-                depthBiasClamp: 0f,
-                depthBiasSlopeFactor: 0f
-            );
+                var scissor = new Rect2D(new Offset2D(0, 0), _cachedDeviceInfo.Extent2D);
 
-            var multisampling = new PipelineMultisampleStateCreateInfo(
-                sampleShadingEnable: Vk.False,
-                rasterizationSamples: SampleCountFlags.SampleCount1Bit,
-                minSampleShading: 1f,
-                alphaToCoverageEnable: Vk.False,
-                alphaToOneEnable: Vk.False
-            );
+                var viewportState = new PipelineViewportStateCreateInfo(
+                    viewportCount: 1,
+                    pViewports: &viewport,
+                    scissorCount: 1,
+                    pScissors: &scissor
+                );
 
-            var colorBlendAttachment = new PipelineColorBlendAttachmentState(
-                colorWriteMask: ColorComponentFlags.ColorComponentABit | ColorComponentFlags.ColorComponentRBit | ColorComponentFlags.ColorComponentGBit | ColorComponentFlags.ColorComponentBBit,
-                blendEnable: Vk.False
-            );
+                var rasterizer = new PipelineRasterizationStateCreateInfo(
+                    depthClampEnable: Vk.False,
+                    rasterizerDiscardEnable: Vk.False,
+                    polygonMode: PolygonMode.Fill,
+                    lineWidth: 1f,
+                    cullMode: CullModeFlags.CullModeBackBit,
+                    frontFace: FrontFace.Clockwise,
+                    depthBiasEnable: Vk.False,
+                    depthBiasConstantFactor: 0f,
+                    depthBiasClamp: 0f,
+                    depthBiasSlopeFactor: 0f
+                );
 
-            var colorBlending = new PipelineColorBlendStateCreateInfo(
-                logicOpEnable: Vk.False,
-                logicOp: LogicOp.Copy,
-                attachmentCount: 1,
-                pAttachments: &colorBlendAttachment
-            );
+                var multisampling = new PipelineMultisampleStateCreateInfo(
+                    sampleShadingEnable: Vk.False,
+                    rasterizationSamples: SampleCountFlags.SampleCount1Bit,
+                    minSampleShading: 1f,
+                    alphaToCoverageEnable: Vk.False,
+                    alphaToOneEnable: Vk.False
+                );
 
-            var pipelineLayoutInfo = new PipelineLayoutCreateInfo(
-                flags: 0
-            );
-            
-            VkCheck.Success(_vk.CreatePipelineLayout(_device, &pipelineLayoutInfo, null, out _pipelineLayout), "Failed to create pipeline layout");
+                var colorBlendAttachment = new PipelineColorBlendAttachmentState(
+                    colorWriteMask: ColorComponentFlags.ColorComponentABit | ColorComponentFlags.ColorComponentRBit | ColorComponentFlags.ColorComponentGBit | ColorComponentFlags.ColorComponentBBit,
+                    blendEnable: Vk.False
+                );
 
-            var pipelineInfo = new GraphicsPipelineCreateInfo(
-                stageCount: 2,
-                pStages: shaderStages,
-                pVertexInputState: &vertexInputInfo,
-                pInputAssemblyState: &inputAssembly,
-                pViewportState: &viewportState,
-                pRasterizationState: &rasterizer,
-                pMultisampleState: &multisampling,
-                pDepthStencilState: null,
-                pColorBlendState: &colorBlending,
-                pDynamicState: null,
-                layout: _pipelineLayout,
-                renderPass: _renderPass,
-                subpass: 0,
-                basePipelineHandle: null,
-                basePipelineIndex: -1
-            );
-            
-            VkCheck.Success(_vk.CreateGraphicsPipelines(_device, default, 1, &pipelineInfo, null, out _graphicsPipeline), "Failed to create the graphics pipeline");
-            
+                var colorBlending = new PipelineColorBlendStateCreateInfo(
+                    logicOpEnable: Vk.False,
+                    logicOp: LogicOp.Copy,
+                    attachmentCount: 1,
+                    pAttachments: &colorBlendAttachment
+                );
+
+                var pipelineLayoutInfo = new PipelineLayoutCreateInfo(
+                    flags: 0
+                );
+
+                VkCheck.Success(_vk.CreatePipelineLayout(_device, &pipelineLayoutInfo, null, out _pipelineLayout), "Failed to create pipeline layout");
+
+                var pipelineInfo = new GraphicsPipelineCreateInfo(
+                    stageCount: 2,
+                    pStages: shaderStages,
+                    pVertexInputState: &vertexInputInfo,
+                    pInputAssemblyState: &inputAssembly,
+                    pViewportState: &viewportState,
+                    pRasterizationState: &rasterizer,
+                    pMultisampleState: &multisampling,
+                    pDepthStencilState: null,
+                    pColorBlendState: &colorBlending,
+                    pDynamicState: null,
+                    layout: _pipelineLayout,
+                    renderPass: _renderPass,
+                    subpass: 0,
+                    basePipelineHandle: null,
+                    basePipelineIndex: -1
+                );
+
+                VkCheck.Success(_vk.CreateGraphicsPipelines(_device, default, 1, &pipelineInfo, null, out _graphicsPipeline), "Failed to create the graphics pipeline");
+            }
+
 
             _vk.DestroyShaderModule(_device, fragShaderModule, null);
             _vk.DestroyShaderModule(_device, vertShaderModule, null);
@@ -816,6 +866,58 @@ namespace VulkanTutorial
             
             VkCheck.Success(_vk.CreateCommandPool(_device, &poolInfo, null, out _commandPool), "Failed to create command pool");
         }
+
+        private void CreateVertexBuffer()
+        {
+            var bufferLength = (sizeof(Vertex) * Vertices.Length);
+            
+            var bufferCreateInfo = new BufferCreateInfo(
+                size: (ulong)bufferLength,
+                usage: BufferUsageFlags.BufferUsageVertexBufferBit,
+                sharingMode: SharingMode.Exclusive
+            );
+            
+            VkCheck.Success(_vk.CreateBuffer(_device, &bufferCreateInfo, null, out _vertexBuffer), "Failed to create vertex buffer");
+
+            MemoryRequirements memoryRequirements;
+            _vk.GetBufferMemoryRequirements(_device, _vertexBuffer, &memoryRequirements);
+
+            var allocInfo = new MemoryAllocateInfo(
+                allocationSize: memoryRequirements.Size,
+                memoryTypeIndex: FindMemoryType(memoryRequirements.MemoryTypeBits, MemoryPropertyFlags.MemoryPropertyHostVisibleBit | MemoryPropertyFlags.MemoryPropertyHostCoherentBit)
+            );
+            
+            VkCheck.Success(_vk.AllocateMemory(_device, &allocInfo, null, out _vertexBufferMemory), "Failed to allocate vertex buffer memory!");
+            
+            VkCheck.Success(_vk.BindBufferMemory(_device, _vertexBuffer, _vertexBufferMemory, 0));
+
+            void* data;
+            VkCheck.Success(_vk.MapMemory(_device, _vertexBufferMemory, 0, bufferCreateInfo.Size, 0, &data));
+
+            fixed (Vertex* vertexData = Vertices)
+            {
+                //TODO: alignment requirement?
+                Unsafe.CopyBlock(data, vertexData, (uint)bufferLength);
+            }
+            
+            _vk.UnmapMemory(_device, _vertexBufferMemory);
+        }
+
+        private uint FindMemoryType(uint typeFilter, MemoryPropertyFlags properties)
+        {
+            PhysicalDeviceMemoryProperties memoryProperties;
+            _vk.GetPhysicalDeviceMemoryProperties(_physicalDevice, &memoryProperties);
+
+            for (uint i = 0; i < memoryProperties.MemoryTypeCount; ++i)
+            {
+                if ((typeFilter & (1 << (int) i)) != 0 && (memoryProperties.MemoryTypes[(int)i].PropertyFlags & properties) == properties)
+                {
+                    return i;
+                }
+            }
+
+            throw new InvalidOperationException("Failed to allocate vertex buffer memory");
+        }
         
         private void CreateCommandBuffers()
         {
@@ -853,8 +955,11 @@ namespace VulkanTutorial
                     _vk.CmdBeginRenderPass(commandBuffersPtr[i], &renderPassInfo, SubpassContents.Inline);
                     
                     _vk.CmdBindPipeline(commandBuffersPtr[i], PipelineBindPoint.Graphics, _graphicsPipeline);
+
+                    ulong offset = 0;
+                    _vk.CmdBindVertexBuffers(commandBuffersPtr[i], 0, 1, in _vertexBuffer, &offset);
                     
-                    _vk.CmdDraw(commandBuffersPtr[i], 3, 1, 0, 0);
+                    _vk.CmdDraw(commandBuffersPtr[i], (uint)Vertices.Length, 1, 0, 0);
                     
                     _vk.CmdEndRenderPass(commandBuffersPtr[i]);
                     
@@ -1028,6 +1133,9 @@ namespace VulkanTutorial
                 _vk.DestroyFence(_device, inFlightFence, null);
             }
             
+            _vk.DestroyBuffer(_device, _vertexBuffer, null);
+            _vk.FreeMemory(_device, _vertexBufferMemory, null);
+
             _vk.DestroyCommandPool(_device, _commandPool, null);
 
             _vk.DestroyDevice(_device, null);
