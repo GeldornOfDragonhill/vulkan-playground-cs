@@ -82,10 +82,13 @@ namespace VulkanTutorial
 
         private static readonly Vertex[] Vertices = 
             {
-                new Vertex {Pos = new Vector2D<float> {X = 0.0f, Y = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 1.0f, Z = 1.0f}},
-                new Vertex {Pos = new Vector2D<float> {X = 0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 1.0f, Z = 0.0f}},
-                new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 0.0f, Z = 1.0f}}
+                new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 0.0f, Z = 0.0f}},
+                new Vertex {Pos = new Vector2D<float> {X = 0.5f, Y = -0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 1.0f, Z = 0.0f}},
+                new Vertex {Pos = new Vector2D<float> {X = 0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 0.0f, Z = 1.0f}},
+                new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 1.0f, Z = 1.0f}},
             };
+
+        private static readonly ushort[] Indices = {0, 1, 2, 2, 3, 0};
         
         private const string EngineName = "N/A";
 
@@ -131,6 +134,8 @@ namespace VulkanTutorial
         private CommandPool _commandPool;
         private Buffer _vertexBuffer;
         private DeviceMemory _vertexBufferMemory;
+        private Buffer _indexBuffer;
+        private DeviceMemory _indexBufferMemory;
         private CommandBuffer[] _commandBuffers;
 
         private readonly Semaphore[] _imageAvailableSemaphores = new Semaphore[MaxFramesInFlight];
@@ -192,6 +197,7 @@ namespace VulkanTutorial
             {
                 CreateCommandPool();
                 CreateVertexBuffer();
+                CreateIndexBuffer();
             }
             CreateCommandBuffers();
         }
@@ -915,6 +921,31 @@ namespace VulkanTutorial
             _vk.FreeMemory(_device, stagingBufferMemory, null);
         }
 
+        private void CreateIndexBuffer()
+        {
+            var bufferSize = (uint) (sizeof(ushort) * Indices.Length);
+            
+            CreateBuffer(bufferSize, BufferUsageFlags.BufferUsageTransferSrcBit, MemoryPropertyFlags.MemoryPropertyHostVisibleBit | MemoryPropertyFlags.MemoryPropertyHostCoherentBit, out var stagingBuffer, out var stagingBufferMemory);
+            
+            void* data;
+            VkCheck.Success(_vk.MapMemory(_device, stagingBufferMemory, 0, bufferSize, 0, &data));
+
+            fixed (ushort* indexData = Indices)
+            {
+                //TODO: alignment requirement?
+                Unsafe.CopyBlock(data, indexData, bufferSize);
+            }
+            
+            _vk.UnmapMemory(_device, stagingBufferMemory);
+            
+            CreateBuffer(bufferSize, BufferUsageFlags.BufferUsageTransferDstBit | BufferUsageFlags.BufferUsageIndexBufferBit, MemoryPropertyFlags.MemoryPropertyDeviceLocalBit, out _indexBuffer, out _indexBufferMemory);
+            
+            CopyBuffer(stagingBuffer, _indexBuffer, bufferSize);
+            
+            _vk.DestroyBuffer(_device, stagingBuffer, null);
+            _vk.FreeMemory(_device, stagingBufferMemory, null);
+        }
+
         private void CopyBuffer(Buffer srcBuffer, Buffer dstBuffer, uint size)
         {
             var allocateInfo = new CommandBufferAllocateInfo(
@@ -1004,8 +1035,9 @@ namespace VulkanTutorial
 
                     ulong offset = 0;
                     _vk.CmdBindVertexBuffers(commandBuffersPtr[i], 0, 1, in _vertexBuffer, &offset);
+                    _vk.CmdBindIndexBuffer(commandBuffersPtr[i], _indexBuffer, 0, IndexType.Uint16);
                     
-                    _vk.CmdDraw(commandBuffersPtr[i], (uint)Vertices.Length, 1, 0, 0);
+                    _vk.CmdDrawIndexed(commandBuffersPtr[i], (uint)Indices.Length, 1, 0, 0, 0);
                     
                     _vk.CmdEndRenderPass(commandBuffersPtr[i]);
                     
@@ -1178,6 +1210,9 @@ namespace VulkanTutorial
             {
                 _vk.DestroyFence(_device, inFlightFence, null);
             }
+            
+            _vk.DestroyBuffer(_device, _indexBuffer, null);
+            _vk.FreeMemory(_device, _indexBufferMemory, null);
             
             _vk.DestroyBuffer(_device, _vertexBuffer, null);
             _vk.FreeMemory(_device, _vertexBufferMemory, null);
