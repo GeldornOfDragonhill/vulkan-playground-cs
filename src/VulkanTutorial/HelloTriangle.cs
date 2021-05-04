@@ -867,40 +867,86 @@ namespace VulkanTutorial
             VkCheck.Success(_vk.CreateCommandPool(_device, &poolInfo, null, out _commandPool), "Failed to create command pool");
         }
 
-        private void CreateVertexBuffer()
+        private void CreateBuffer(uint size, BufferUsageFlags usage, MemoryPropertyFlags properties, out Buffer buffer, out DeviceMemory bufferMemory)
         {
-            var bufferLength = (sizeof(Vertex) * Vertices.Length);
-            
-            var bufferCreateInfo = new BufferCreateInfo(
-                size: (ulong)bufferLength,
-                usage: BufferUsageFlags.BufferUsageVertexBufferBit,
+            var bufferInfo = new BufferCreateInfo(
+                size: size,
+                usage: usage,
                 sharingMode: SharingMode.Exclusive
             );
             
-            VkCheck.Success(_vk.CreateBuffer(_device, &bufferCreateInfo, null, out _vertexBuffer), "Failed to create vertex buffer");
+            VkCheck.Success(_vk.CreateBuffer(_device, &bufferInfo, null, out buffer), "Failed to create vertex buffer");
 
             MemoryRequirements memoryRequirements;
-            _vk.GetBufferMemoryRequirements(_device, _vertexBuffer, &memoryRequirements);
+            _vk.GetBufferMemoryRequirements(_device, buffer, &memoryRequirements);
 
             var allocInfo = new MemoryAllocateInfo(
                 allocationSize: memoryRequirements.Size,
-                memoryTypeIndex: FindMemoryType(memoryRequirements.MemoryTypeBits, MemoryPropertyFlags.MemoryPropertyHostVisibleBit | MemoryPropertyFlags.MemoryPropertyHostCoherentBit)
+                memoryTypeIndex: FindMemoryType(memoryRequirements.MemoryTypeBits, properties)
             );
             
-            VkCheck.Success(_vk.AllocateMemory(_device, &allocInfo, null, out _vertexBufferMemory), "Failed to allocate vertex buffer memory!");
+            VkCheck.Success(_vk.AllocateMemory(_device, &allocInfo, null, out bufferMemory), "Failed to allocate vertex buffer memory!");
             
-            VkCheck.Success(_vk.BindBufferMemory(_device, _vertexBuffer, _vertexBufferMemory, 0));
+            VkCheck.Success(_vk.BindBufferMemory(_device, buffer, bufferMemory, 0));
+        }
 
+        private void CreateVertexBuffer()
+        {
+            var bufferLength = (uint)(sizeof(Vertex) * Vertices.Length);
+            
+            CreateBuffer(bufferLength, BufferUsageFlags.BufferUsageTransferSrcBit, MemoryPropertyFlags.MemoryPropertyHostVisibleBit | MemoryPropertyFlags.MemoryPropertyHostCoherentBit, out var stagingBuffer, out var stagingBufferMemory);
+            
             void* data;
-            VkCheck.Success(_vk.MapMemory(_device, _vertexBufferMemory, 0, bufferCreateInfo.Size, 0, &data));
+            VkCheck.Success(_vk.MapMemory(_device, stagingBufferMemory, 0, bufferLength, 0, &data));
 
             fixed (Vertex* vertexData = Vertices)
             {
                 //TODO: alignment requirement?
-                Unsafe.CopyBlock(data, vertexData, (uint)bufferLength);
+                Unsafe.CopyBlock(data, vertexData, bufferLength);
             }
             
-            _vk.UnmapMemory(_device, _vertexBufferMemory);
+            _vk.UnmapMemory(_device, stagingBufferMemory);
+            
+            CreateBuffer(bufferLength, BufferUsageFlags.BufferUsageTransferDstBit | BufferUsageFlags.BufferUsageVertexBufferBit, MemoryPropertyFlags.MemoryPropertyDeviceLocalBit, out _vertexBuffer, out _vertexBufferMemory);
+            
+            CopyBuffer(stagingBuffer, _vertexBuffer, bufferLength);
+            
+            _vk.DestroyBuffer(_device, stagingBuffer, null);
+            _vk.FreeMemory(_device, stagingBufferMemory, null);
+        }
+
+        private void CopyBuffer(Buffer srcBuffer, Buffer dstBuffer, uint size)
+        {
+            var allocateInfo = new CommandBufferAllocateInfo(
+                level: CommandBufferLevel.Primary,
+                commandPool: _commandPool,
+                commandBufferCount: 1
+            );
+
+            CommandBuffer commandBuffer;
+            
+            VkCheck.Success(_vk.AllocateCommandBuffers(_device, &allocateInfo, &commandBuffer));
+
+            var beginInfo = new CommandBufferBeginInfo(
+                flags: CommandBufferUsageFlags.CommandBufferUsageOneTimeSubmitBit
+            );
+
+            _vk.BeginCommandBuffer(commandBuffer, &beginInfo);
+
+            var copyRegion = new BufferCopy(0, 0, size);
+            _vk.CmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+            
+            VkCheck.Success(_vk.EndCommandBuffer(commandBuffer));
+
+            var submitInfo = new SubmitInfo(
+                commandBufferCount: 1,
+                pCommandBuffers: &commandBuffer
+            );
+
+            _vk.QueueSubmit(_graphicsQueue, 1, &submitInfo, default);
+            _vk.QueueWaitIdle(_graphicsQueue);
+            
+            _vk.FreeCommandBuffers(_device, _commandPool, 1, &commandBuffer);
         }
 
         private uint FindMemoryType(uint typeFilter, MemoryPropertyFlags properties)
