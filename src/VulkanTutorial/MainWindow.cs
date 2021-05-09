@@ -13,6 +13,8 @@ namespace VulkanTutorial
 
         public int Width => _window.Size.X;
         public int Height => _window.Size.Y;
+
+        public double TotalTime => _window.Time;
         
         public MainWindow()
         {

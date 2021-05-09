@@ -80,6 +80,14 @@ namespace VulkanTutorial
                 };
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        struct UniformBufferObject
+        {
+            public Matrix4X4<float> Model;
+            public Matrix4X4<float> View;
+            public Matrix4X4<float> Proj;
+        }
+
         private static readonly Vertex[] Vertices = 
             {
                 new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 0.0f, Z = 0.0f}},
@@ -128,6 +136,7 @@ namespace VulkanTutorial
         private Extent2D _swapChainExtent;
         private ImageView[] _swapChainImageViews;
         private RenderPass _renderPass;
+        private DescriptorSetLayout _descriptorSetLayout;
         private PipelineLayout _pipelineLayout;
         private Pipeline _graphicsPipeline;
         private Framebuffer[] _swapChainFramebuffers;
@@ -136,7 +145,11 @@ namespace VulkanTutorial
         private DeviceMemory _vertexBufferMemory;
         private Buffer _indexBuffer;
         private DeviceMemory _indexBufferMemory;
+        private Buffer[] _uniformBuffers;
+        private DeviceMemory[] _uniformBuffersMemory;
         private CommandBuffer[] _commandBuffers;
+        private DescriptorPool _descriptorPool;
+        private DescriptorSet[] _descriptorSets;
 
         private readonly Semaphore[] _imageAvailableSemaphores = new Semaphore[MaxFramesInFlight];
         private readonly Semaphore[] _renderFinishedSemaphores = new Semaphore[MaxFramesInFlight];
@@ -191,6 +204,10 @@ namespace VulkanTutorial
             CreateSwapChain();
             CreateImageViews();
             CreateRenderPass();
+            if (!recreate)
+            {
+                CreateDescriptorSetLayout();
+            }
             CreateGraphicsPipeline();
             CreateFramebuffers();
             if (!recreate)
@@ -199,6 +216,9 @@ namespace VulkanTutorial
                 CreateVertexBuffer();
                 CreateIndexBuffer();
             }
+            CreateUniformBuffer();
+            CreateDescriptorPool();
+            CreateDescriptorSets();
             CreateCommandBuffers();
         }
 
@@ -685,6 +705,25 @@ namespace VulkanTutorial
             
             VkCheck.Success(_vk.CreateRenderPass(_device, &renderPassInfo, null, out _renderPass), "Failed to create render pass");
         }
+
+        private void CreateDescriptorSetLayout()
+        {
+            var uboLayoutBinding = new DescriptorSetLayoutBinding(
+                binding: 0,
+                descriptorType: DescriptorType.UniformBuffer,
+                descriptorCount: 1,
+                stageFlags: ShaderStageFlags.ShaderStageVertexBit,
+                pImmutableSamplers: null
+            );
+
+            var layoutInfo = new DescriptorSetLayoutCreateInfo(
+                bindingCount: 1,
+                pBindings: &uboLayoutBinding
+            );
+            
+            VkCheck.Success(_vk.CreateDescriptorSetLayout(_device, &layoutInfo, null, out _descriptorSetLayout), "Failed to create descriptor set layout!");
+
+        }
         
         private void CreateGraphicsPipeline()
         {
@@ -749,7 +788,7 @@ namespace VulkanTutorial
                     polygonMode: PolygonMode.Fill,
                     lineWidth: 1f,
                     cullMode: CullModeFlags.CullModeBackBit,
-                    frontFace: FrontFace.Clockwise,
+                    frontFace: FrontFace.CounterClockwise,
                     depthBiasEnable: Vk.False,
                     depthBiasConstantFactor: 0f,
                     depthBiasClamp: 0f,
@@ -776,8 +815,12 @@ namespace VulkanTutorial
                     pAttachments: &colorBlendAttachment
                 );
 
+                var descriptorSetLayout = _descriptorSetLayout;
+                
                 var pipelineLayoutInfo = new PipelineLayoutCreateInfo(
-                    flags: 0
+                    flags: 0,
+                    setLayoutCount: 1,
+                    pSetLayouts: &descriptorSetLayout
                 );
 
                 VkCheck.Success(_vk.CreatePipelineLayout(_device, &pipelineLayoutInfo, null, out _pipelineLayout), "Failed to create pipeline layout");
@@ -995,6 +1038,80 @@ namespace VulkanTutorial
 
             throw new InvalidOperationException("Failed to allocate vertex buffer memory");
         }
+
+        private void CreateUniformBuffer()
+        {
+            var bufferSize = (uint) sizeof(UniformBufferObject);
+
+            _uniformBuffers = new Buffer[_swapChainImages.Length];
+            _uniformBuffersMemory = new DeviceMemory[_swapChainImages.Length];
+
+            for (var i = 0; i < _swapChainImages.Length; ++i)
+            {
+                CreateBuffer(bufferSize, BufferUsageFlags.BufferUsageUniformBufferBit, MemoryPropertyFlags.MemoryPropertyHostVisibleBit | MemoryPropertyFlags.MemoryPropertyHostCoherentBit, out _uniformBuffers[i], out _uniformBuffersMemory[i]);
+            }
+        }
+
+        private void CreateDescriptorPool()
+        {
+            var poolSize = new DescriptorPoolSize(
+                type: DescriptorType.UniformBuffer,
+                descriptorCount: (uint)_swapChainImages.Length
+            );
+
+            var poolInfo = new DescriptorPoolCreateInfo(
+                poolSizeCount: 1,
+                pPoolSizes: &poolSize,
+                maxSets: (uint)_swapChainImages.Length
+            );
+            
+            VkCheck.Success(_vk.CreateDescriptorPool(_device, &poolInfo, null, out _descriptorPool), "Failed to create descriptor pool");
+        }
+
+        private void CreateDescriptorSets()
+        {
+            _descriptorSets = new DescriptorSet[_swapChainImages.Length];
+
+            var layouts = stackalloc DescriptorSetLayout[_swapChainImages.Length];
+
+            for (var i = 0; i < _swapChainImages.Length; ++i)
+            {
+                layouts[i] = _descriptorSetLayout;
+            }
+
+            var allocInfo = new DescriptorSetAllocateInfo(
+                descriptorPool: _descriptorPool,
+                descriptorSetCount: (uint)_swapChainImages.Length,
+                pSetLayouts: layouts
+            );
+
+            fixed (DescriptorSet* descriptorSetsPtr = _descriptorSets)
+            {
+                VkCheck.Success(_vk.AllocateDescriptorSets(_device, &allocInfo, descriptorSetsPtr), "Failed to allocate descriptor sets");
+            }
+
+            for (var i = 0; i < _swapChainImages.Length; ++i)
+            {
+                var bufferInfo = new DescriptorBufferInfo(
+                    buffer: _uniformBuffers[i],
+                    offset: 0,
+                    range: (uint)sizeof(UniformBufferObject)
+                );
+
+                var descriptorWrite = new WriteDescriptorSet(
+                    dstSet: _descriptorSets[i],
+                    dstBinding: 0,
+                    dstArrayElement: 0,
+                    descriptorType: DescriptorType.UniformBuffer,
+                    descriptorCount: 1,
+                    pBufferInfo: &bufferInfo,
+                    pImageInfo: null,
+                    pTexelBufferView: null
+                );
+                
+                _vk.UpdateDescriptorSets(_device, 1, &descriptorWrite, 0, null);
+            }
+        }
         
         private void CreateCommandBuffers()
         {
@@ -1036,6 +1153,8 @@ namespace VulkanTutorial
                     ulong offset = 0;
                     _vk.CmdBindVertexBuffers(commandBuffersPtr[i], 0, 1, in _vertexBuffer, &offset);
                     _vk.CmdBindIndexBuffer(commandBuffersPtr[i], _indexBuffer, 0, IndexType.Uint16);
+                    
+                    _vk.CmdBindDescriptorSets(commandBuffersPtr[i], PipelineBindPoint.Graphics, _pipelineLayout, 0, 1, _descriptorSets[i], 0, null);
                     
                     _vk.CmdDrawIndexed(commandBuffersPtr[i], (uint)Indices.Length, 1, 0, 0, 0);
                     
@@ -1110,6 +1229,8 @@ namespace VulkanTutorial
 
             var commandBuffer = _commandBuffers[imageIndex];
             
+            UpdateUniformBuffer(imageIndex);
+            
             var submitInfo = new SubmitInfo(
                 waitSemaphoreCount: 1,
                 pWaitSemaphores: &semaphore,
@@ -1151,6 +1272,24 @@ namespace VulkanTutorial
             _currentFrame = (_currentFrame + 1) % MaxFramesInFlight;
         }
 
+        private void UpdateUniformBuffer(uint imageIndex)
+        {
+            UniformBufferObject ubo;
+
+            ubo.Model = Matrix4X4.CreateRotationZ((float)TotalTime * 1.5708f);
+            ubo.View = Matrix4X4.CreateLookAt(new Vector3D<float>(2f, 2f, 2f), Vector3D<float>.Zero, new Vector3D<float>(0f, 0f, 1f));
+            ubo.Proj = Matrix4X4.CreatePerspectiveFieldOfView(0.785398f, _swapChainExtent.Width / (float) _swapChainExtent.Height, 0.1f, 10f);
+
+            ubo.Proj.M22 *= -1f;
+
+            void* data;
+            VkCheck.Success(_vk.MapMemory(_device, _uniformBuffersMemory[imageIndex], 0, (ulong)sizeof(UniformBufferObject), 0, &data));
+
+            Unsafe.CopyBlock(data, &ubo, (uint)sizeof(UniformBufferObject));
+            
+            _vk.UnmapMemory(_device, _uniformBuffersMemory[imageIndex]);
+        }
+
         private void CleanupSwapChain()
         {
             //Check if swap chain exists
@@ -1172,7 +1311,18 @@ namespace VulkanTutorial
                 _vk.FreeCommandBuffers(_device, _commandPool, (uint)_commandBuffers.Length, commandBuffersPtr);
             }
             _commandBuffers = null;
+
+            for (var i = 0; i < _swapChainImages.Length; ++i)
+            {
+                _vk.DestroyBuffer(_device, _uniformBuffers[i], null);
+                _vk.FreeMemory(_device, _uniformBuffersMemory[i], null);
+            }
+            _uniformBuffers = null;
+            _uniformBuffersMemory = null;
             
+            _vk.DestroyDescriptorPool(_device, _descriptorPool, null);
+            _descriptorPool = default;
+
             _vk.DestroyPipeline(_device, _graphicsPipeline, null);
             _graphicsPipeline = default;
             
@@ -1195,12 +1345,13 @@ namespace VulkanTutorial
         protected override void OnClose()
         {
             CleanupSwapChain();
+            
+            _vk.DestroyDescriptorSetLayout(_device, _descriptorSetLayout, null);
 
             foreach (var renderFinishedSemaphore in _renderFinishedSemaphores)
             {
                 _vk.DestroySemaphore(_device, renderFinishedSemaphore, null);
             }
-            
             foreach (var imageAvailableSemaphore in _imageAvailableSemaphores)
             {
                 _vk.DestroySemaphore(_device, imageAvailableSemaphore, null);
