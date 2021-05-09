@@ -21,6 +21,12 @@
       <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.3.0" />
       <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.3.0" />
       <PackageReference Include="Silk.NET.Windowing" Version="2.3.0" />
+      <PackageReference Include="SixLabors.ImageSharp" Version="1.0.3" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Remove="Textures\texture.jpg" />
+      <EmbeddedResource Include="Textures\texture.jpg" />
     </ItemGroup>
 
 </Project>

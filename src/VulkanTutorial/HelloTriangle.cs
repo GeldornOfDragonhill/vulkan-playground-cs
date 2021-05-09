@@ -9,6 +9,7 @@ using Silk.NET.Maths;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
+using SixLabors.ImageSharp.PixelFormats;
 using VulkanTutorial.Tools;
 using Buffer = Silk.NET.Vulkan.Buffer;
 
@@ -50,12 +51,14 @@ namespace VulkanTutorial
             public PresentModeKHR PresentMode;
             public SurfaceCapabilitiesKHR SurfaceCapabilities;
             public Extent2D Extent2D;
+            public float? MaxSamplerAnisotropy;
         }
         
         struct Vertex
         {
             public Vector2D<float> Pos;
             public Vector3D<float> Color;
+            public Vector2D<float> TexCoord;
 
             public static VertexInputBindingDescription BindingDescription => new VertexInputBindingDescription(
                 binding: 0,
@@ -65,17 +68,23 @@ namespace VulkanTutorial
 
             public static VertexInputAttributeDescription[] AttributeDescriptions => new VertexInputAttributeDescription[]
                 {
-                    new (
+                    new(
                         binding: 0,
                         location: 0,
                         format: Format.R32G32Sfloat,
                         offset: (uint) Marshal.OffsetOf<Vertex>(nameof(Pos))
                     ),
-                    new (
+                    new(
                         binding: 0,
                         location: 1,
                         format: Format.R32G32B32Sfloat,
                         offset: (uint) Marshal.OffsetOf<Vertex>(nameof(Color))
+                    ),
+                    new(
+                        binding: 0,
+                        location: 2,
+                        format: Format.R32G32Sfloat,
+                        offset: (uint) Marshal.OffsetOf<Vertex>(nameof(TexCoord))
                     )
                 };
         }
@@ -90,10 +99,10 @@ namespace VulkanTutorial
 
         private static readonly Vertex[] Vertices = 
             {
-                new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 0.0f, Z = 0.0f}},
-                new Vertex {Pos = new Vector2D<float> {X = 0.5f, Y = -0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 1.0f, Z = 0.0f}},
-                new Vertex {Pos = new Vector2D<float> {X = 0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 0.0f, Z = 1.0f}},
-                new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 1.0f, Z = 1.0f}},
+                new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 0.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(1f, 0f)},
+                new Vertex {Pos = new Vector2D<float> {X = 0.5f, Y = -0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 1.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(0f, 0f)},
+                new Vertex {Pos = new Vector2D<float> {X = 0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 0.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(0f, 1f)},
+                new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 1.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(1f, 1f)},
             };
 
         private static readonly ushort[] Indices = {0, 1, 2, 2, 3, 0};
@@ -150,6 +159,10 @@ namespace VulkanTutorial
         private CommandBuffer[] _commandBuffers;
         private DescriptorPool _descriptorPool;
         private DescriptorSet[] _descriptorSets;
+        private Image _textureImage;
+        private DeviceMemory _textureImageMemory;
+        private ImageView _textureImageView;
+        private Sampler _textureSampler;
 
         private readonly Semaphore[] _imageAvailableSemaphores = new Semaphore[MaxFramesInFlight];
         private readonly Semaphore[] _renderFinishedSemaphores = new Semaphore[MaxFramesInFlight];
@@ -213,6 +226,9 @@ namespace VulkanTutorial
             if (!recreate)
             {
                 CreateCommandPool();
+                CreateTextureImage();
+                CreateTextureImageView();
+                CreateTextureSampler();
                 CreateVertexBuffer();
                 CreateIndexBuffer();
             }
@@ -395,7 +411,12 @@ namespace VulkanTutorial
                 return false;
             }
 
-            return QuerySwapChainSupport(physicalDevice, cachedDeviceInfo);
+            if (!QuerySwapChainSupport(physicalDevice, cachedDeviceInfo))
+            {
+                return false;
+            }
+
+            return CheckDeviceFeatures(physicalDevice, cachedDeviceInfo);
         }
         
         private  QueueFamilyIndices FindQueueFamilies(in PhysicalDevice physicalDevice)
@@ -528,6 +549,22 @@ namespace VulkanTutorial
                 cachedDeviceInfo.Extent2D = actualExtend;
             }
         }
+
+        private bool CheckDeviceFeatures(PhysicalDevice physicalDevice, CachedDeviceInfo cachedDeviceInfo)
+        {
+            PhysicalDeviceFeatures deviceFeatures;
+            _vk.GetPhysicalDeviceFeatures(physicalDevice, &deviceFeatures);
+            
+            PhysicalDeviceProperties properties;
+            _vk.GetPhysicalDeviceProperties(physicalDevice, &properties);
+
+            if (deviceFeatures.SamplerAnisotropy)
+            {
+                cachedDeviceInfo.MaxSamplerAnisotropy = properties.Limits.MaxSamplerAnisotropy;
+            }
+
+            return true;
+        }
         
         private void CreateLogicalDevice()
         {
@@ -549,7 +586,9 @@ namespace VulkanTutorial
                 ++uniqueIndicesIndex;
             }
 
-            var deviceFeatures = new PhysicalDeviceFeatures();
+            var deviceFeatures = new PhysicalDeviceFeatures(
+                samplerAnisotropy: _cachedDeviceInfo.MaxSamplerAnisotropy.HasValue
+            );
 
             using var validationLayers = new StringArrayPtrWrapper(_enableValidationLayers ? ValidationLayers : Array.Empty<string>());
             using var deviceExtensions = new StringArrayPtrWrapper(DeviceExtensions);
@@ -634,33 +673,9 @@ namespace VulkanTutorial
         {
             _swapChainImageViews = new ImageView[_swapChainImages.Length];
 
-            fixed (Image* swapChainImages = _swapChainImages)
-            fixed (ImageView* swapChainImageViews = _swapChainImageViews)
+            for (var i = 0; i < _swapChainImages.Length; ++i)
             {
-
-                for (var i = 0; i < _swapChainImages.Length; ++i)
-                {
-                    var imageViewCreateInfo = new ImageViewCreateInfo(
-                        image: swapChainImages[i],
-                        viewType: ImageViewType.ImageViewType2D,
-                        format: _cachedDeviceInfo.SurfaceFormat.Format,
-                        components: new ComponentMapping(
-                            r: ComponentSwizzle.Identity,
-                            g: ComponentSwizzle.Identity,
-                            b: ComponentSwizzle.Identity,
-                            a: ComponentSwizzle.Identity
-                        ),
-                        subresourceRange: new ImageSubresourceRange(
-                            aspectMask: ImageAspectFlags.ImageAspectColorBit,
-                            baseMipLevel: 0,
-                            levelCount: 1,
-                            baseArrayLayer: 0,
-                            layerCount: 1
-                        )
-                    );
-
-                    VkCheck.Success(_vk.CreateImageView(_device, &imageViewCreateInfo, null, &swapChainImageViews[i]), "Failed to create image view");
-                }
+                _swapChainImageViews[i] = CreateImageView(_swapChainImages[i], _swapChainImageFormat);
             }
         }
 
@@ -708,7 +723,10 @@ namespace VulkanTutorial
 
         private void CreateDescriptorSetLayout()
         {
-            var uboLayoutBinding = new DescriptorSetLayoutBinding(
+            const int numBindings = 2;
+            var bindings = stackalloc DescriptorSetLayoutBinding[numBindings];
+            
+            bindings[0] = new DescriptorSetLayoutBinding(
                 binding: 0,
                 descriptorType: DescriptorType.UniformBuffer,
                 descriptorCount: 1,
@@ -716,13 +734,20 @@ namespace VulkanTutorial
                 pImmutableSamplers: null
             );
 
+            bindings[1] = new DescriptorSetLayoutBinding(
+                binding: 1,
+                descriptorType: DescriptorType.CombinedImageSampler,
+                descriptorCount: 1,
+                stageFlags: ShaderStageFlags.ShaderStageFragmentBit,
+                pImmutableSamplers: null
+            );
+
             var layoutInfo = new DescriptorSetLayoutCreateInfo(
-                bindingCount: 1,
-                pBindings: &uboLayoutBinding
+                bindingCount: numBindings,
+                pBindings: bindings
             );
             
             VkCheck.Success(_vk.CreateDescriptorSetLayout(_device, &layoutInfo, null, out _descriptorSetLayout), "Failed to create descriptor set layout!");
-
         }
         
         private void CreateGraphicsPipeline()
@@ -939,6 +964,224 @@ namespace VulkanTutorial
             VkCheck.Success(_vk.BindBufferMemory(_device, buffer, bufferMemory, 0));
         }
 
+        private void CreateTextureImage()
+        {
+            var textureStream = Assembly.GetExecutingAssembly().GetManifestResourceStream("VulkanTutorial.Textures.texture.jpg");
+
+            if (textureStream == null)
+            {
+                throw new InvalidOperationException($"Texture not found");
+            }
+
+            SixLabors.ImageSharp.Image<Rgba32> textureImage;
+            
+            try
+            {
+                textureImage = SixLabors.ImageSharp.Image.Load<Rgba32>(textureStream);
+            }
+            catch
+            {
+                throw new InvalidOperationException("Failed to load texture");
+            }
+            
+            var textureWidth = (uint)textureImage.Width;
+            var textureHeight = (uint) textureImage.Height;
+
+            var imageSize = textureWidth * textureHeight * 4; 
+
+            Buffer stagingBuffer;
+
+            CreateBuffer(imageSize, BufferUsageFlags.BufferUsageTransferSrcBit, MemoryPropertyFlags.MemoryPropertyHostVisibleBit | MemoryPropertyFlags.MemoryPropertyHostCoherentBit, out stagingBuffer, out var stagingBufferMemory);
+
+            if (!textureImage.TryGetSinglePixelSpan(out var pixelDataSpan))
+            {
+                throw new InvalidOperationException("Could not get pixel data");
+            }
+
+            fixed (Rgba32* pixelBuffer = pixelDataSpan)
+            {
+
+                void* data;
+                VkCheck.Success(_vk.MapMemory(_device, stagingBufferMemory, 0, imageSize, 0, &data));
+                Unsafe.CopyBlock(data, pixelBuffer, imageSize);
+                _vk.UnmapMemory(_device, stagingBufferMemory);
+            }
+
+            textureImage.Dispose();
+            
+            CreateImage(textureWidth, textureHeight, Format.R8G8B8A8Srgb, ImageTiling.Optimal, ImageUsageFlags.ImageUsageTransferDstBit | ImageUsageFlags.ImageUsageSampledBit, MemoryPropertyFlags.MemoryPropertyDeviceLocalBit, out _textureImage, out _textureImageMemory);
+            
+            TransitionImageLayout(_textureImage, Format.R8G8B8A8Srgb, ImageLayout.Undefined, ImageLayout.TransferDstOptimal);
+            
+            CopyBufferToImage(stagingBuffer, _textureImage, textureWidth, textureHeight);
+            
+            TransitionImageLayout(_textureImage, Format.R8G8B8A8Srgb, ImageLayout.TransferDstOptimal, ImageLayout.ShaderReadOnlyOptimal);
+            
+            _vk.DestroyBuffer(_device, stagingBuffer, null);
+            _vk.FreeMemory(_device, stagingBufferMemory, null);
+        }
+
+        private void CopyBufferToImage(Buffer buffer, Image image, uint width, uint height)
+        {
+            ExecuteSingleTimeCommands(commandBuffer =>
+            {
+                var region = new BufferImageCopy(
+                    bufferOffset: 0,
+                    bufferRowLength: 0,
+                    bufferImageHeight: 0,
+                    imageSubresource: new ImageSubresourceLayers(
+                        aspectMask: ImageAspectFlags.ImageAspectColorBit,
+                        mipLevel: 0,
+                        baseArrayLayer: 0,
+                        layerCount: 1
+                    ),
+                    imageOffset: new Offset3D(0, 0, 0),
+                    imageExtent: new Extent3D(width, height, 1)
+                );
+                
+                _vk.CmdCopyBufferToImage(commandBuffer, buffer, image, ImageLayout.TransferDstOptimal, 1, &region);
+            });
+        }
+
+        private void TransitionImageLayout(Image image, Format format, ImageLayout oldLayout, ImageLayout newLayout)
+        {
+            ExecuteSingleTimeCommands(commandBuffer =>
+            {
+                var imageMemoryBarrier = new ImageMemoryBarrier(
+                    oldLayout: oldLayout,
+                    newLayout: newLayout,
+                    srcQueueFamilyIndex: Vk.QueueFamilyIgnored,
+                    dstQueueFamilyIndex: Vk.QueueFamilyIgnored,
+                    image: image,
+                    subresourceRange: new ImageSubresourceRange(
+                        aspectMask: ImageAspectFlags.ImageAspectColorBit,
+                        baseMipLevel: 0,
+                        levelCount: 1,
+                        baseArrayLayer: 0,
+                        layerCount: 1
+                    )
+                );
+                
+                PipelineStageFlags sourceStage;
+                PipelineStageFlags destinationStage;
+
+                if (oldLayout == ImageLayout.Undefined && newLayout == ImageLayout.TransferDstOptimal)
+                {
+                    imageMemoryBarrier.SrcAccessMask = 0;
+                    imageMemoryBarrier.DstAccessMask = AccessFlags.AccessTransferWriteBit;
+
+                    sourceStage = PipelineStageFlags.PipelineStageTopOfPipeBit;
+                    destinationStage = PipelineStageFlags.PipelineStageTransferBit;
+                }
+                else if (oldLayout == ImageLayout.TransferDstOptimal && newLayout == ImageLayout.ShaderReadOnlyOptimal)
+                {
+                    imageMemoryBarrier.SrcAccessMask = AccessFlags.AccessTransferWriteBit;
+                    imageMemoryBarrier.DstAccessMask = AccessFlags.AccessShaderReadBit;
+
+                    sourceStage = PipelineStageFlags.PipelineStageTransferBit;
+                    destinationStage = PipelineStageFlags.PipelineStageFragmentShaderBit;
+                }
+                else
+                {
+                    throw new InvalidOperationException("Unsupported layout transition");
+                }
+                
+                _vk.CmdPipelineBarrier(
+                    commandBuffer: commandBuffer,
+                    srcStageMask: sourceStage,
+                    dstStageMask: destinationStage,
+                    dependencyFlags: 0,
+                    memoryBarrierCount: 0,
+                    pMemoryBarriers: null,
+                    bufferMemoryBarrierCount: 0,
+                    pBufferMemoryBarriers: null,
+                    imageMemoryBarrierCount: 1,
+                    pImageMemoryBarriers: &imageMemoryBarrier
+                );
+            });
+        }
+
+        private void CreateImage(uint width, uint height, Format format, ImageTiling tiling, ImageUsageFlags usage, MemoryPropertyFlags properties, out Image image, out DeviceMemory imageMemory)
+        {
+            var imageInfo = new ImageCreateInfo(
+                imageType: ImageType.ImageType2D,
+                extent: new Extent3D(width, height, 1),
+                mipLevels: 1,
+                arrayLayers: 1,
+                format: format,
+                tiling: tiling,
+                initialLayout: ImageLayout.Undefined,
+                usage: usage,
+                sharingMode: SharingMode.Exclusive,
+                samples: SampleCountFlags.SampleCount1Bit,
+                flags: 0
+            );
+            
+            VkCheck.Success(_vk.CreateImage(_device, &imageInfo, null, out image), "Failed to create image");
+
+            MemoryRequirements memoryRequirements;
+            _vk.GetImageMemoryRequirements(_device, image, &memoryRequirements);
+
+            var allocInfo = new MemoryAllocateInfo(
+                allocationSize: memoryRequirements.Size,
+                memoryTypeIndex: FindMemoryType(memoryRequirements.MemoryTypeBits, properties)
+            );
+            
+            VkCheck.Success(_vk.AllocateMemory(_device, &allocInfo, null, out imageMemory), "Failed to allocate image memory");
+
+            _vk.BindImageMemory(_device, image, imageMemory, 0);
+        }
+
+        private void CreateTextureImageView()
+        {
+            _textureImageView = CreateImageView(_textureImage, Format.R8G8B8A8Srgb);
+        }
+
+        private ImageView CreateImageView(Image image, Format format)
+        {
+            var viewInfo = new ImageViewCreateInfo(
+                image: image,
+                viewType: ImageViewType.ImageViewType2D,
+                format: format,
+                subresourceRange: new ImageSubresourceRange(
+                    aspectMask: ImageAspectFlags.ImageAspectColorBit,
+                    baseMipLevel: 0,
+                    levelCount: 1,
+                    baseArrayLayer: 0,
+                    layerCount: 1
+                )
+            );
+
+            ImageView imageView;
+            VkCheck.Success(_vk.CreateImageView(_device, &viewInfo, null, &imageView), "Failed to create image view");
+            return imageView;
+        }
+
+        private void CreateTextureSampler()
+        {
+            
+            
+            var samplerInfo = new SamplerCreateInfo(
+                magFilter: Filter.Linear,
+                minFilter: Filter.Linear,
+                addressModeU: SamplerAddressMode.Repeat,
+                addressModeV: SamplerAddressMode.Repeat,
+                addressModeW: SamplerAddressMode.Repeat,
+                anisotropyEnable: _cachedDeviceInfo.MaxSamplerAnisotropy.HasValue,
+                maxAnisotropy: _cachedDeviceInfo.MaxSamplerAnisotropy,
+                borderColor: BorderColor.IntOpaqueBlack,
+                unnormalizedCoordinates: Vk.False,
+                compareEnable: Vk.False,
+                compareOp: CompareOp.Always,
+                mipmapMode: SamplerMipmapMode.Linear,
+                mipLodBias: 0f,
+                minLod: 0f,
+                maxLod: 0f
+            );
+            
+            VkCheck.Success(_vk.CreateSampler(_device, &samplerInfo, null, out _textureSampler), "Failed to create texture sampler");
+        }
+
         private void CreateVertexBuffer()
         {
             var bufferLength = (uint)(sizeof(Vertex) * Vertices.Length);
@@ -989,7 +1232,7 @@ namespace VulkanTutorial
             _vk.FreeMemory(_device, stagingBufferMemory, null);
         }
 
-        private void CopyBuffer(Buffer srcBuffer, Buffer dstBuffer, uint size)
+        private void ExecuteSingleTimeCommands(Action<CommandBuffer> action)
         {
             var allocateInfo = new CommandBufferAllocateInfo(
                 level: CommandBufferLevel.Primary,
@@ -1007,9 +1250,8 @@ namespace VulkanTutorial
 
             _vk.BeginCommandBuffer(commandBuffer, &beginInfo);
 
-            var copyRegion = new BufferCopy(0, 0, size);
-            _vk.CmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
-            
+            action(commandBuffer);
+
             VkCheck.Success(_vk.EndCommandBuffer(commandBuffer));
 
             var submitInfo = new SubmitInfo(
@@ -1021,6 +1263,15 @@ namespace VulkanTutorial
             _vk.QueueWaitIdle(_graphicsQueue);
             
             _vk.FreeCommandBuffers(_device, _commandPool, 1, &commandBuffer);
+        }
+
+        private void CopyBuffer(Buffer srcBuffer, Buffer dstBuffer, uint size)
+        {
+            ExecuteSingleTimeCommands(commandBuffer =>
+            {
+                var copyRegion = new BufferCopy(0, 0, size);
+                _vk.CmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+            });
         }
 
         private uint FindMemoryType(uint typeFilter, MemoryPropertyFlags properties)
@@ -1054,14 +1305,23 @@ namespace VulkanTutorial
 
         private void CreateDescriptorPool()
         {
-            var poolSize = new DescriptorPoolSize(
+            const int numPoolSizes = 2;
+
+            var poolSizes = stackalloc DescriptorPoolSize[numPoolSizes];
+            
+            poolSizes[0] = new DescriptorPoolSize(
                 type: DescriptorType.UniformBuffer,
+                descriptorCount: (uint)_swapChainImages.Length
+            );
+            
+            poolSizes[1] = new DescriptorPoolSize(
+                type: DescriptorType.CombinedImageSampler,
                 descriptorCount: (uint)_swapChainImages.Length
             );
 
             var poolInfo = new DescriptorPoolCreateInfo(
-                poolSizeCount: 1,
-                pPoolSizes: &poolSize,
+                poolSizeCount: numPoolSizes,
+                pPoolSizes: poolSizes,
                 maxSets: (uint)_swapChainImages.Length
             );
             
@@ -1089,6 +1349,10 @@ namespace VulkanTutorial
             {
                 VkCheck.Success(_vk.AllocateDescriptorSets(_device, &allocInfo, descriptorSetsPtr), "Failed to allocate descriptor sets");
             }
+            
+            //Will be reused in the loop
+            const int numDescriptorWrites = 2;
+            var descriptorWrites = stackalloc WriteDescriptorSet[numDescriptorWrites];
 
             for (var i = 0; i < _swapChainImages.Length; ++i)
             {
@@ -1098,18 +1362,31 @@ namespace VulkanTutorial
                     range: (uint)sizeof(UniformBufferObject)
                 );
 
-                var descriptorWrite = new WriteDescriptorSet(
+                var imageInfo = new DescriptorImageInfo(
+                    imageLayout: ImageLayout.ShaderReadOnlyOptimal,
+                    imageView: _textureImageView,
+                    sampler: _textureSampler
+                );
+
+                descriptorWrites[0] = new WriteDescriptorSet(
                     dstSet: _descriptorSets[i],
                     dstBinding: 0,
                     dstArrayElement: 0,
                     descriptorType: DescriptorType.UniformBuffer,
                     descriptorCount: 1,
-                    pBufferInfo: &bufferInfo,
-                    pImageInfo: null,
-                    pTexelBufferView: null
+                    pBufferInfo: &bufferInfo
                 );
                 
-                _vk.UpdateDescriptorSets(_device, 1, &descriptorWrite, 0, null);
+                descriptorWrites[1] = new WriteDescriptorSet(
+                    dstSet: _descriptorSets[i],
+                    dstBinding: 1,
+                    dstArrayElement: 0,
+                    descriptorType: DescriptorType.CombinedImageSampler,
+                    descriptorCount: 1,
+                    pImageInfo: &imageInfo
+                );
+
+                _vk.UpdateDescriptorSets(_device, numDescriptorWrites, descriptorWrites, 0, null);
             }
         }
         
@@ -1345,6 +1622,13 @@ namespace VulkanTutorial
         protected override void OnClose()
         {
             CleanupSwapChain();
+            
+            _vk.DestroySampler(_device, _textureSampler, null);
+            
+            _vk.DestroyImageView(_device, _textureImageView, null);
+            
+            _vk.DestroyImage(_device, _textureImage, null);
+            _vk.FreeMemory(_device, _textureImageMemory, null);
             
             _vk.DestroyDescriptorSetLayout(_device, _descriptorSetLayout, null);
 
