@@ -1,9 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using Silk.NET.Assimp;
 using Silk.NET.Core;
 using Silk.NET.Maths;
 using Silk.NET.Vulkan;
@@ -97,25 +100,6 @@ namespace VulkanTutorial
             public Matrix4X4<float> Proj;
         }
 
-        private static readonly Vertex[] Vertices = 
-            {
-                new Vertex {Pos = new Vector3D<float> {X = -0.5f, Y = -0.5f, Z = 0f}, Color = new Vector3D<float> {X = 1.0f, Y = 0.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(1f, 0f)},
-                new Vertex {Pos = new Vector3D<float> {X = 0.5f, Y = -0.5f, Z = 0f}, Color = new Vector3D<float> {X = 0.0f, Y = 1.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(0f, 0f)},
-                new Vertex {Pos = new Vector3D<float> {X = 0.5f, Y = 0.5f, Z = 0f}, Color = new Vector3D<float> {X = 0.0f, Y = 0.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(0f, 1f)},
-                new Vertex {Pos = new Vector3D<float> {X = -0.5f, Y = 0.5f, Z = 0f}, Color = new Vector3D<float> {X = 1.0f, Y = 1.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(1f, 1f)},
-                
-                new Vertex {Pos = new Vector3D<float> {X = -0.5f, Y = -0.5f, Z = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 0.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(1f, 0f)},
-                new Vertex {Pos = new Vector3D<float> {X = 0.5f, Y = -0.5f, Z = -0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 1.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(0f, 0f)},
-                new Vertex {Pos = new Vector3D<float> {X = 0.5f, Y = 0.5f, Z = -0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 0.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(0f, 1f)},
-                new Vertex {Pos = new Vector3D<float> {X = -0.5f, Y = 0.5f, Z = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 1.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(1f, 1f)}
-            };
-
-        private static readonly ushort[] Indices =
-            {
-                0, 1, 2, 2, 3, 0,
-                4, 5, 6, 6, 7, 4
-            };
-        
         private const string EngineName = "N/A";
 
         private const int MaxFramesInFlight = 2; 
@@ -132,6 +116,9 @@ namespace VulkanTutorial
 
         private readonly bool _enableValidationLayers;
         private readonly Vk _vk = Vk.GetApi();
+
+        private Vertex[] _vertices;
+        private ushort[] _indices;
 
         private ExtDebugUtils _extDebugUtils;
         private KhrSurface _extKhrSurface;
@@ -250,6 +237,7 @@ namespace VulkanTutorial
                 CreateTextureImage();
                 CreateTextureImageView();
                 CreateTextureSampler();
+                LoadModel();
                 CreateVertexBuffer();
                 CreateIndexBuffer();
             }
@@ -1053,7 +1041,7 @@ namespace VulkanTutorial
 
         private void CreateTextureImage()
         {
-            var textureStream = Assembly.GetExecutingAssembly().GetManifestResourceStream("VulkanTutorial.Textures.texture.jpg");
+            var textureStream = Assembly.GetExecutingAssembly().GetManifestResourceStream("VulkanTutorial.Textures.viking_room.png");
 
             if (textureStream == null)
             {
@@ -1269,16 +1257,64 @@ namespace VulkanTutorial
             VkCheck.Success(_vk.CreateSampler(_device, &samplerInfo, null, out _textureSampler), "Failed to create texture sampler");
         }
 
+        private void LoadModel()
+        {
+            var indices = new List<ushort>();
+            var vertices = new List<Vertex>();
+            var verticesMap = new Dictionary<Vector3, ushort>();
+
+            var assimp = Assimp.GetApi();
+            var scene = assimp.ImportFile(Path.Join(Directory.GetCurrentDirectory(), "Models", "viking_room.obj"), (uint) (PostProcessSteps.Triangulate | PostProcessSteps.FlipUVs));
+
+            if (scene->MNumMeshes == 1)
+            {
+                ref var mesh = ref scene->MMeshes[0];
+
+                for (uint iFace = 0; iFace < mesh->MNumFaces; ++iFace)
+                {
+                    ref var face = ref mesh->MFaces[iFace];
+
+                    for (uint iIndex = 0; iIndex < face.MNumIndices; ++iIndex)
+                    {
+                        var index = (ushort)face.MIndices[iIndex];
+                        ref var vertex = ref mesh->MVertices[index];
+
+                        if (!verticesMap.TryGetValue(vertex, out var position))
+                        {
+                            position = (ushort) vertices.Count;
+                            verticesMap.Add(vertex, position);
+                            
+                            ref var textureCoords = ref mesh->MTextureCoords[0][index];
+
+                            vertices.Add(new Vertex
+                                {
+                                    Pos = new Vector3D<float>(vertex.X, vertex.Y, vertex.Z),
+                                    TexCoord = new Vector2D<float>(textureCoords.X, textureCoords.Y),
+                                    Color = new Vector3D<float>(1f, 1f, 1f)
+                                });
+                        }
+                        
+                        indices.Add(position);
+                    }
+                }
+
+                _vertices = vertices.ToArray();
+                _indices = indices.ToArray();
+            }
+            
+            assimp.FreeScene(scene);
+        }
+
         private void CreateVertexBuffer()
         {
-            var bufferLength = (uint)(sizeof(Vertex) * Vertices.Length);
+            var bufferLength = (uint)(sizeof(Vertex) * _vertices.Length);
             
             CreateBuffer(bufferLength, BufferUsageFlags.BufferUsageTransferSrcBit, MemoryPropertyFlags.MemoryPropertyHostVisibleBit | MemoryPropertyFlags.MemoryPropertyHostCoherentBit, out var stagingBuffer, out var stagingBufferMemory);
             
             void* data;
             VkCheck.Success(_vk.MapMemory(_device, stagingBufferMemory, 0, bufferLength, 0, &data));
 
-            fixed (Vertex* vertexData = Vertices)
+            fixed (Vertex* vertexData = _vertices)
             {
                 //TODO: alignment requirement?
                 Unsafe.CopyBlock(data, vertexData, bufferLength);
@@ -1296,14 +1332,14 @@ namespace VulkanTutorial
 
         private void CreateIndexBuffer()
         {
-            var bufferSize = (uint) (sizeof(ushort) * Indices.Length);
+            var bufferSize = (uint) (sizeof(ushort) * _indices.Length);
             
             CreateBuffer(bufferSize, BufferUsageFlags.BufferUsageTransferSrcBit, MemoryPropertyFlags.MemoryPropertyHostVisibleBit | MemoryPropertyFlags.MemoryPropertyHostCoherentBit, out var stagingBuffer, out var stagingBufferMemory);
             
             void* data;
             VkCheck.Success(_vk.MapMemory(_device, stagingBufferMemory, 0, bufferSize, 0, &data));
 
-            fixed (ushort* indexData = Indices)
+            fixed (ushort* indexData = _indices)
             {
                 //TODO: alignment requirement?
                 Unsafe.CopyBlock(data, indexData, bufferSize);
@@ -1524,7 +1560,7 @@ namespace VulkanTutorial
                     
                     _vk.CmdBindDescriptorSets(commandBuffersPtr[i], PipelineBindPoint.Graphics, _pipelineLayout, 0, 1, _descriptorSets[i], 0, null);
                     
-                    _vk.CmdDrawIndexed(commandBuffersPtr[i], (uint)Indices.Length, 1, 0, 0, 0);
+                    _vk.CmdDrawIndexed(commandBuffersPtr[i], (uint)_indices.Length, 1, 0, 0, 0);
                     
                     _vk.CmdEndRenderPass(commandBuffersPtr[i]);
                     

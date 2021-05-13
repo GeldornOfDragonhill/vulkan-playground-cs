@@ -16,17 +16,24 @@
 
     <ItemGroup>
       <PackageReference Include="Dragonhill.ShaderCompiler.MSBuild" Version="1.0.1" />
-      <PackageReference Include="Silk.NET.Input" Version="2.3.0" />
-      <PackageReference Include="Silk.NET.Vulkan" Version="2.3.0" />
-      <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.3.0" />
-      <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.3.0" />
-      <PackageReference Include="Silk.NET.Windowing" Version="2.3.0" />
+      <PackageReference Include="Silk.NET.Assimp" Version="2.4.0" />
+      <PackageReference Include="Silk.NET.Input" Version="2.4.0" />
+      <PackageReference Include="Silk.NET.Vulkan" Version="2.4.0" />
+      <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.4.0" />
+      <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.4.0" />
+      <PackageReference Include="Silk.NET.Windowing" Version="2.4.0" />
       <PackageReference Include="SixLabors.ImageSharp" Version="1.0.3" />
     </ItemGroup>
 
     <ItemGroup>
-      <None Remove="Textures\texture.jpg" />
-      <EmbeddedResource Include="Textures\texture.jpg" />
+      <None Update="Models\viking_room.obj">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Remove="Textures\viking_room.png" />
+      <EmbeddedResource Include="Textures\viking_room.png" />
     </ItemGroup>
 
 </Project>
