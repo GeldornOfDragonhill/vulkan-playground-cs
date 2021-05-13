@@ -56,7 +56,7 @@ namespace VulkanTutorial
         
         struct Vertex
         {
-            public Vector2D<float> Pos;
+            public Vector3D<float> Pos;
             public Vector3D<float> Color;
             public Vector2D<float> TexCoord;
 
@@ -71,7 +71,7 @@ namespace VulkanTutorial
                     new(
                         binding: 0,
                         location: 0,
-                        format: Format.R32G32Sfloat,
+                        format: Format.R32G32B32Sfloat,
                         offset: (uint) Marshal.OffsetOf<Vertex>(nameof(Pos))
                     ),
                     new(
@@ -99,13 +99,22 @@ namespace VulkanTutorial
 
         private static readonly Vertex[] Vertices = 
             {
-                new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 0.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(1f, 0f)},
-                new Vertex {Pos = new Vector2D<float> {X = 0.5f, Y = -0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 1.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(0f, 0f)},
-                new Vertex {Pos = new Vector2D<float> {X = 0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 0.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(0f, 1f)},
-                new Vertex {Pos = new Vector2D<float> {X = -0.5f, Y = 0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 1.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(1f, 1f)},
+                new Vertex {Pos = new Vector3D<float> {X = -0.5f, Y = -0.5f, Z = 0f}, Color = new Vector3D<float> {X = 1.0f, Y = 0.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(1f, 0f)},
+                new Vertex {Pos = new Vector3D<float> {X = 0.5f, Y = -0.5f, Z = 0f}, Color = new Vector3D<float> {X = 0.0f, Y = 1.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(0f, 0f)},
+                new Vertex {Pos = new Vector3D<float> {X = 0.5f, Y = 0.5f, Z = 0f}, Color = new Vector3D<float> {X = 0.0f, Y = 0.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(0f, 1f)},
+                new Vertex {Pos = new Vector3D<float> {X = -0.5f, Y = 0.5f, Z = 0f}, Color = new Vector3D<float> {X = 1.0f, Y = 1.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(1f, 1f)},
+                
+                new Vertex {Pos = new Vector3D<float> {X = -0.5f, Y = -0.5f, Z = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 0.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(1f, 0f)},
+                new Vertex {Pos = new Vector3D<float> {X = 0.5f, Y = -0.5f, Z = -0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 1.0f, Z = 0.0f}, TexCoord = new Vector2D<float>(0f, 0f)},
+                new Vertex {Pos = new Vector3D<float> {X = 0.5f, Y = 0.5f, Z = -0.5f}, Color = new Vector3D<float> {X = 0.0f, Y = 0.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(0f, 1f)},
+                new Vertex {Pos = new Vector3D<float> {X = -0.5f, Y = 0.5f, Z = -0.5f}, Color = new Vector3D<float> {X = 1.0f, Y = 1.0f, Z = 1.0f}, TexCoord = new Vector2D<float>(1f, 1f)}
             };
 
-        private static readonly ushort[] Indices = {0, 1, 2, 2, 3, 0};
+        private static readonly ushort[] Indices =
+            {
+                0, 1, 2, 2, 3, 0,
+                4, 5, 6, 6, 7, 4
+            };
         
         private const string EngineName = "N/A";
 
@@ -163,6 +172,9 @@ namespace VulkanTutorial
         private DeviceMemory _textureImageMemory;
         private ImageView _textureImageView;
         private Sampler _textureSampler;
+        private Image _depthImage;
+        private DeviceMemory _depthImageMemory;
+        private ImageView _depthImageView;
 
         private readonly Semaphore[] _imageAvailableSemaphores = new Semaphore[MaxFramesInFlight];
         private readonly Semaphore[] _renderFinishedSemaphores = new Semaphore[MaxFramesInFlight];
@@ -217,15 +229,24 @@ namespace VulkanTutorial
             CreateSwapChain();
             CreateImageViews();
             CreateRenderPass();
+            
             if (!recreate)
             {
                 CreateDescriptorSetLayout();
             }
+            
             CreateGraphicsPipeline();
-            CreateFramebuffers();
+           
             if (!recreate)
             {
                 CreateCommandPool();
+            }
+            
+            CreateDepthResources();
+            CreateFramebuffers();
+
+            if(!recreate)
+            {
                 CreateTextureImage();
                 CreateTextureImageView();
                 CreateTextureSampler();
@@ -675,13 +696,16 @@ namespace VulkanTutorial
 
             for (var i = 0; i < _swapChainImages.Length; ++i)
             {
-                _swapChainImageViews[i] = CreateImageView(_swapChainImages[i], _swapChainImageFormat);
+                _swapChainImageViews[i] = CreateImageView(_swapChainImages[i], _swapChainImageFormat, ImageAspectFlags.ImageAspectColorBit);
             }
         }
 
         private void CreateRenderPass()
         {
-            var colorAttachment = new AttachmentDescription(
+            const int numAttachments = 2;
+            var attachments = stackalloc AttachmentDescription[2];
+            
+            attachments[0] = new AttachmentDescription(
                 format: _swapChainImageFormat,
                 samples: SampleCountFlags.SampleCount1Bit,
                 loadOp: AttachmentLoadOp.Clear,
@@ -694,24 +718,41 @@ namespace VulkanTutorial
 
             var colorAttachmentRef = new AttachmentReference(0, ImageLayout.ColorAttachmentOptimal);
             
+            attachments[1] = new AttachmentDescription(
+                format: FindDepthFormat(),
+                samples: SampleCountFlags.SampleCount1Bit,
+                loadOp: AttachmentLoadOp.Clear,
+                storeOp: AttachmentStoreOp.DontCare,
+                stencilLoadOp: AttachmentLoadOp.DontCare,
+                stencilStoreOp: AttachmentStoreOp.DontCare,
+                initialLayout: ImageLayout.Undefined,
+                finalLayout: ImageLayout.DepthStencilAttachmentOptimal
+            );
+
+            var depthAttachmentRef = new AttachmentReference(
+                attachment: 1,
+                layout: ImageLayout.DepthStencilAttachmentOptimal
+            );
+            
             var subpass = new SubpassDescription(
                 pipelineBindPoint: PipelineBindPoint.Graphics,
                 colorAttachmentCount: 1,
-                pColorAttachments: &colorAttachmentRef
+                pColorAttachments: &colorAttachmentRef,
+                pDepthStencilAttachment: &depthAttachmentRef
             );
 
             var dependency = new SubpassDependency(
                 srcSubpass: Vk.SubpassExternal,
                 dstSubpass: 0,
-                srcStageMask: PipelineStageFlags.PipelineStageColorAttachmentOutputBit,
+                srcStageMask: PipelineStageFlags.PipelineStageColorAttachmentOutputBit | PipelineStageFlags.PipelineStageEarlyFragmentTestsBit,
                 srcAccessMask: 0,
-                dstStageMask: PipelineStageFlags.PipelineStageColorAttachmentOutputBit,
-                dstAccessMask: AccessFlags.AccessColorAttachmentWriteBit
+                dstStageMask: PipelineStageFlags.PipelineStageColorAttachmentOutputBit | PipelineStageFlags.PipelineStageEarlyFragmentTestsBit,
+                dstAccessMask: AccessFlags.AccessColorAttachmentWriteBit | AccessFlags.AccessDepthStencilAttachmentWriteBit
             );
 
             var renderPassInfo = new RenderPassCreateInfo(
-                attachmentCount: 1,
-                pAttachments: &colorAttachment,
+                attachmentCount: numAttachments,
+                pAttachments: attachments,
                 subpassCount: 1,
                 pSubpasses: &subpass,
                 dependencyCount: 1,
@@ -850,6 +891,14 @@ namespace VulkanTutorial
 
                 VkCheck.Success(_vk.CreatePipelineLayout(_device, &pipelineLayoutInfo, null, out _pipelineLayout), "Failed to create pipeline layout");
 
+                var depthStencil = new PipelineDepthStencilStateCreateInfo(
+                    depthTestEnable: Vk.True,
+                    depthWriteEnable: Vk.True,
+                    depthCompareOp: CompareOp.Less,
+                    depthBoundsTestEnable: Vk.False,
+                    stencilTestEnable: Vk.False
+                );
+
                 var pipelineInfo = new GraphicsPipelineCreateInfo(
                     stageCount: 2,
                     pStages: shaderStages,
@@ -858,7 +907,7 @@ namespace VulkanTutorial
                     pViewportState: &viewportState,
                     pRasterizationState: &rasterizer,
                     pMultisampleState: &multisampling,
-                    pDepthStencilState: null,
+                    pDepthStencilState: &depthStencil,
                     pColorBlendState: &colorBlending,
                     pDynamicState: null,
                     layout: _pipelineLayout,
@@ -914,14 +963,18 @@ namespace VulkanTutorial
         {
             _swapChainFramebuffers = new Framebuffer[_swapChainImageViews.Length];
 
+            const int numAttachments = 2;
+            var attachments = stackalloc ImageView[numAttachments];
+
             for (var i = 0; i < _swapChainImageViews.Length; ++i)
             {
-                var attachment = _swapChainImageViews[i];
-                
+                attachments[0] = _swapChainImageViews[i];
+                attachments[1] = _depthImageView;
+
                 var framebufferInfo = new FramebufferCreateInfo(
                     renderPass: _renderPass,
-                    attachmentCount: 1,
-                    pAttachments: &attachment,
+                    attachmentCount: numAttachments,
+                    pAttachments: attachments,
                     width: _swapChainExtent.Width,
                     height: _swapChainExtent.Height,
                     layers: 1
@@ -962,6 +1015,40 @@ namespace VulkanTutorial
             VkCheck.Success(_vk.AllocateMemory(_device, &allocInfo, null, out bufferMemory), "Failed to allocate vertex buffer memory!");
             
             VkCheck.Success(_vk.BindBufferMemory(_device, buffer, bufferMemory, 0));
+        }
+
+        private void CreateDepthResources()
+        {
+            var depthFormat = FindDepthFormat();
+            
+            CreateImage(_swapChainExtent.Width, _swapChainExtent.Height, depthFormat, ImageTiling.Optimal, ImageUsageFlags.ImageUsageDepthStencilAttachmentBit, MemoryPropertyFlags.MemoryPropertyDeviceLocalBit, out _depthImage, out _depthImageMemory);
+
+            _depthImageView = CreateImageView(_depthImage, depthFormat, ImageAspectFlags.ImageAspectDepthBit);
+        }
+
+        private Format FindDepthFormat()
+        {
+            return FindSupportedFormat(new[] {Format.D32Sfloat, Format.D32SfloatS8Uint, Format.D24UnormS8Uint}, ImageTiling.Optimal, FormatFeatureFlags.FormatFeatureDepthStencilAttachmentBit);
+        }
+
+        private Format FindSupportedFormat(IEnumerable<Format> candidates, ImageTiling tiling, FormatFeatureFlags featureFlags)
+        {
+            foreach (var candidate in candidates)
+            {
+                FormatProperties props;
+                
+                _vk.GetPhysicalDeviceFormatProperties(_physicalDevice, candidate, &props);
+
+                switch (tiling)
+                {
+                    case ImageTiling.Linear when (props.LinearTilingFeatures & featureFlags) == featureFlags:
+                        return candidate;
+                    case ImageTiling.Optimal when (props.OptimalTilingFeatures & featureFlags) == featureFlags:
+                        return candidate;
+                }
+            }
+
+            throw new InvalidOperationException("Failed to find supported format");
         }
 
         private void CreateTextureImage()
@@ -1134,17 +1221,17 @@ namespace VulkanTutorial
 
         private void CreateTextureImageView()
         {
-            _textureImageView = CreateImageView(_textureImage, Format.R8G8B8A8Srgb);
+            _textureImageView = CreateImageView(_textureImage, Format.R8G8B8A8Srgb, ImageAspectFlags.ImageAspectColorBit);
         }
 
-        private ImageView CreateImageView(Image image, Format format)
+        private ImageView CreateImageView(Image image, Format format, ImageAspectFlags aspectFlags)
         {
             var viewInfo = new ImageViewCreateInfo(
                 image: image,
                 viewType: ImageViewType.ImageViewType2D,
                 format: format,
                 subresourceRange: new ImageSubresourceRange(
-                    aspectMask: ImageAspectFlags.ImageAspectColorBit,
+                    aspectMask: aspectFlags,
                     baseMipLevel: 0,
                     levelCount: 1,
                     baseArrayLayer: 0,
@@ -1404,6 +1491,9 @@ namespace VulkanTutorial
             {
                 VkCheck.Success(_vk.AllocateCommandBuffers(_device, &allocInfo, commandBuffersPtr), "Failed to allocate command buffers");
 
+                const int numClearValues = 2;
+                var clearValues = stackalloc ClearValue[numClearValues];
+
                 for (var i = 0; i < _commandBuffers.Length; ++i)
                 {
                     var beginInfo = new CommandBufferBeginInfo(
@@ -1413,14 +1503,15 @@ namespace VulkanTutorial
                     
                     VkCheck.Success(_vk.BeginCommandBuffer(commandBuffersPtr[i], &beginInfo), "Failed to begin recording command buffer");
 
-                    var clearColor = new ClearValue(new ClearColorValue {Float32_0 = 0, Float32_1 = 0, Float32_2 = 0, Float32_3 = 1});
+                    clearValues[0].Color = new ClearColorValue {Float32_0 = 0, Float32_1 = 0, Float32_2 = 0, Float32_3 = 1};
+                    clearValues[1].DepthStencil = new ClearDepthStencilValue(1.0f, 0);
 
                     var renderPassInfo = new RenderPassBeginInfo(
                         renderPass: _renderPass,
                         framebuffer: _swapChainFramebuffers[i],
                         renderArea: new Rect2D(new Offset2D(0, 0), _swapChainExtent),
-                        clearValueCount: 1,
-                        pClearValues: &clearColor
+                        clearValueCount: numClearValues,
+                        pClearValues: clearValues
                     );
                     
                     _vk.CmdBeginRenderPass(commandBuffersPtr[i], &renderPassInfo, SubpassContents.Inline);
@@ -1576,6 +1667,10 @@ namespace VulkanTutorial
             }
             
             _vk.DeviceWaitIdle(_device);
+            
+            _vk.DestroyImageView(_device, _depthImageView, null);
+            _vk.DestroyImage(_device, _depthImage, null);
+            _vk.FreeMemory(_device, _depthImageMemory, null);
             
             foreach (var swapChainFramebuffer in _swapChainFramebuffers)
             {
