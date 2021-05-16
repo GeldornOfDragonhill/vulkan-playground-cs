@@ -155,6 +155,7 @@ namespace VulkanTutorial
         private CommandBuffer[] _commandBuffers;
         private DescriptorPool _descriptorPool;
         private DescriptorSet[] _descriptorSets;
+        private uint _mipLevels;
         private Image _textureImage;
         private DeviceMemory _textureImageMemory;
         private ImageView _textureImageView;
@@ -684,7 +685,7 @@ namespace VulkanTutorial
 
             for (var i = 0; i < _swapChainImages.Length; ++i)
             {
-                _swapChainImageViews[i] = CreateImageView(_swapChainImages[i], _swapChainImageFormat, ImageAspectFlags.ImageAspectColorBit);
+                _swapChainImageViews[i] = CreateImageView(_swapChainImages[i], _swapChainImageFormat, ImageAspectFlags.ImageAspectColorBit, 1);
             }
         }
 
@@ -1009,9 +1010,9 @@ namespace VulkanTutorial
         {
             var depthFormat = FindDepthFormat();
             
-            CreateImage(_swapChainExtent.Width, _swapChainExtent.Height, depthFormat, ImageTiling.Optimal, ImageUsageFlags.ImageUsageDepthStencilAttachmentBit, MemoryPropertyFlags.MemoryPropertyDeviceLocalBit, out _depthImage, out _depthImageMemory);
+            CreateImage(_swapChainExtent.Width, _swapChainExtent.Height, 1, depthFormat, ImageTiling.Optimal, ImageUsageFlags.ImageUsageDepthStencilAttachmentBit, MemoryPropertyFlags.MemoryPropertyDeviceLocalBit, out _depthImage, out _depthImageMemory);
 
-            _depthImageView = CreateImageView(_depthImage, depthFormat, ImageAspectFlags.ImageAspectDepthBit);
+            _depthImageView = CreateImageView(_depthImage, depthFormat, ImageAspectFlags.ImageAspectDepthBit, 1);
         }
 
         private Format FindDepthFormat()
@@ -1062,11 +1063,11 @@ namespace VulkanTutorial
             var textureWidth = (uint)textureImage.Width;
             var textureHeight = (uint) textureImage.Height;
 
-            var imageSize = textureWidth * textureHeight * 4; 
+            _mipLevels = (uint)Math.Floor(Math.Log2(Math.Max(textureWidth, textureHeight))) + 1;
 
-            Buffer stagingBuffer;
+            var imageSize = textureWidth * textureHeight * 4;
 
-            CreateBuffer(imageSize, BufferUsageFlags.BufferUsageTransferSrcBit, MemoryPropertyFlags.MemoryPropertyHostVisibleBit | MemoryPropertyFlags.MemoryPropertyHostCoherentBit, out stagingBuffer, out var stagingBufferMemory);
+            CreateBuffer(imageSize, BufferUsageFlags.BufferUsageTransferSrcBit, MemoryPropertyFlags.MemoryPropertyHostVisibleBit | MemoryPropertyFlags.MemoryPropertyHostCoherentBit, out var stagingBuffer, out var stagingBufferMemory);
 
             if (!textureImage.TryGetSinglePixelSpan(out var pixelDataSpan))
             {
@@ -1084,16 +1085,100 @@ namespace VulkanTutorial
 
             textureImage.Dispose();
             
-            CreateImage(textureWidth, textureHeight, Format.R8G8B8A8Srgb, ImageTiling.Optimal, ImageUsageFlags.ImageUsageTransferDstBit | ImageUsageFlags.ImageUsageSampledBit, MemoryPropertyFlags.MemoryPropertyDeviceLocalBit, out _textureImage, out _textureImageMemory);
+            CreateImage(textureWidth, textureHeight, _mipLevels, Format.R8G8B8A8Srgb, ImageTiling.Optimal, ImageUsageFlags.ImageUsageTransferSrcBit | ImageUsageFlags.ImageUsageTransferDstBit | ImageUsageFlags.ImageUsageSampledBit, MemoryPropertyFlags.MemoryPropertyDeviceLocalBit, out _textureImage, out _textureImageMemory);
             
-            TransitionImageLayout(_textureImage, Format.R8G8B8A8Srgb, ImageLayout.Undefined, ImageLayout.TransferDstOptimal);
+            TransitionImageLayout(_textureImage, Format.R8G8B8A8Srgb, ImageLayout.Undefined, ImageLayout.TransferDstOptimal, _mipLevels);
             
             CopyBufferToImage(stagingBuffer, _textureImage, textureWidth, textureHeight);
-            
-            TransitionImageLayout(_textureImage, Format.R8G8B8A8Srgb, ImageLayout.TransferDstOptimal, ImageLayout.ShaderReadOnlyOptimal);
-            
+
             _vk.DestroyBuffer(_device, stagingBuffer, null);
             _vk.FreeMemory(_device, stagingBufferMemory, null);
+            
+            GenerateMipmaps(_textureImage, Format.R8G8B8A8Srgb, (int)textureWidth, (int)textureHeight, _mipLevels);
+        }
+
+        private void GenerateMipmaps(Image image, Format imageFormat, int texWidth, int texHeight, uint mipLevels)
+        {
+            FormatProperties formatProperties;
+            _vk.GetPhysicalDeviceFormatProperties(_physicalDevice, imageFormat, &formatProperties);
+
+            if ((formatProperties.OptimalTilingFeatures & FormatFeatureFlags.FormatFeatureSampledImageFilterLinearBit) == 0)
+            {
+                throw new InvalidOperationException("Texture image format does not support linear blitting");
+            }
+            
+            ExecuteSingleTimeCommands(commandBuffer =>
+            {
+                var barrier = new ImageMemoryBarrier(
+                    image: image,
+                    srcQueueFamilyIndex: Vk.QueueFamilyIgnored,
+                    dstQueueFamilyIndex: Vk.QueueFamilyIgnored,
+                    subresourceRange: new ImageSubresourceRange(
+                        aspectMask: ImageAspectFlags.ImageAspectColorBit,
+                        baseArrayLayer: 0,
+                        layerCount: 1,
+                        levelCount: 1
+                    )
+                );
+
+                var mipWidth = texWidth;
+                var mipHeight = texHeight;
+
+                for (uint i = 1; i < mipLevels; ++i)
+                {
+                    barrier.SubresourceRange.BaseMipLevel = i - 1;
+                    barrier.OldLayout = ImageLayout.TransferDstOptimal;
+                    barrier.NewLayout = ImageLayout.TransferSrcOptimal;
+                    barrier.SrcAccessMask = AccessFlags.AccessTransferWriteBit;
+                    barrier.DstAccessMask = AccessFlags.AccessTransferReadBit;
+                        
+                    _vk.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.PipelineStageTransferBit, PipelineStageFlags.PipelineStageTransferBit, 0, 0, null, 0, null, 1, &barrier);
+
+                    var blit = new ImageBlit
+                        {
+                            SrcOffsets =
+                                {
+                                    [0] = new Offset3D(0, 0, 0),
+                                    [1] = new Offset3D(mipWidth, mipHeight, 1)
+                                },
+                            SrcSubresource = new ImageSubresourceLayers(ImageAspectFlags.ImageAspectColorBit, i - 1, 0, 1),
+                            DstOffsets =
+                                {
+                                    [0] = new Offset3D(0, 0, 0),
+                                    [1] = new Offset3D(mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1)
+                                },
+                            DstSubresource = new ImageSubresourceLayers(ImageAspectFlags.ImageAspectColorBit, i, 0, 1)
+                        };
+
+
+                    _vk.CmdBlitImage(commandBuffer, image, ImageLayout.TransferSrcOptimal, image, ImageLayout.TransferDstOptimal, 1, &blit, Filter.Linear);
+
+                    barrier.OldLayout = ImageLayout.TransferSrcOptimal;
+                    barrier.NewLayout = ImageLayout.ShaderReadOnlyOptimal;
+                    barrier.SrcAccessMask = AccessFlags.AccessTransferReadBit;
+                    barrier.DstAccessMask = AccessFlags.AccessShaderReadBit;
+                    
+                    _vk.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.PipelineStageTransferBit, PipelineStageFlags.PipelineStageFragmentShaderBit, 0, 0, null, 0, null, 1, &barrier);
+
+                    if (mipWidth > 1)
+                    {
+                        mipWidth /= 2;
+                    }
+                    
+                    if (mipHeight > 1)
+                    {
+                        mipHeight /= 2;
+                    }
+                }
+
+                barrier.SubresourceRange.BaseMipLevel = mipLevels - 1;
+                barrier.OldLayout = ImageLayout.TransferDstOptimal;
+                barrier.NewLayout = ImageLayout.ShaderReadOnlyOptimal;
+                barrier.SrcAccessMask = AccessFlags.AccessTransferWriteBit;
+                barrier.DstAccessMask = AccessFlags.AccessShaderReadBit;
+                
+                _vk.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.PipelineStageTransferBit, PipelineStageFlags.PipelineStageFragmentShaderBit, 0, 0, null, 0, null, 1, &barrier);
+            });
         }
 
         private void CopyBufferToImage(Buffer buffer, Image image, uint width, uint height)
@@ -1118,7 +1203,7 @@ namespace VulkanTutorial
             });
         }
 
-        private void TransitionImageLayout(Image image, Format format, ImageLayout oldLayout, ImageLayout newLayout)
+        private void TransitionImageLayout(Image image, Format format, ImageLayout oldLayout, ImageLayout newLayout, uint mipLevels)
         {
             ExecuteSingleTimeCommands(commandBuffer =>
             {
@@ -1131,7 +1216,7 @@ namespace VulkanTutorial
                     subresourceRange: new ImageSubresourceRange(
                         aspectMask: ImageAspectFlags.ImageAspectColorBit,
                         baseMipLevel: 0,
-                        levelCount: 1,
+                        levelCount: mipLevels,
                         baseArrayLayer: 0,
                         layerCount: 1
                     )
@@ -1176,12 +1261,12 @@ namespace VulkanTutorial
             });
         }
 
-        private void CreateImage(uint width, uint height, Format format, ImageTiling tiling, ImageUsageFlags usage, MemoryPropertyFlags properties, out Image image, out DeviceMemory imageMemory)
+        private void CreateImage(uint width, uint height, uint mipLevels, Format format, ImageTiling tiling, ImageUsageFlags usage, MemoryPropertyFlags properties, out Image image, out DeviceMemory imageMemory)
         {
             var imageInfo = new ImageCreateInfo(
                 imageType: ImageType.ImageType2D,
                 extent: new Extent3D(width, height, 1),
-                mipLevels: 1,
+                mipLevels: mipLevels,
                 arrayLayers: 1,
                 format: format,
                 tiling: tiling,
@@ -1209,10 +1294,10 @@ namespace VulkanTutorial
 
         private void CreateTextureImageView()
         {
-            _textureImageView = CreateImageView(_textureImage, Format.R8G8B8A8Srgb, ImageAspectFlags.ImageAspectColorBit);
+            _textureImageView = CreateImageView(_textureImage, Format.R8G8B8A8Srgb, ImageAspectFlags.ImageAspectColorBit, _mipLevels);
         }
 
-        private ImageView CreateImageView(Image image, Format format, ImageAspectFlags aspectFlags)
+        private ImageView CreateImageView(Image image, Format format, ImageAspectFlags aspectFlags, uint mipLevel)
         {
             var viewInfo = new ImageViewCreateInfo(
                 image: image,
@@ -1221,7 +1306,7 @@ namespace VulkanTutorial
                 subresourceRange: new ImageSubresourceRange(
                     aspectMask: aspectFlags,
                     baseMipLevel: 0,
-                    levelCount: 1,
+                    levelCount: mipLevel,
                     baseArrayLayer: 0,
                     layerCount: 1
                 )
@@ -1234,8 +1319,6 @@ namespace VulkanTutorial
 
         private void CreateTextureSampler()
         {
-            
-            
             var samplerInfo = new SamplerCreateInfo(
                 magFilter: Filter.Linear,
                 minFilter: Filter.Linear,
@@ -1251,7 +1334,7 @@ namespace VulkanTutorial
                 mipmapMode: SamplerMipmapMode.Linear,
                 mipLodBias: 0f,
                 minLod: 0f,
-                maxLod: 0f
+                maxLod: (float)_mipLevels
             );
             
             VkCheck.Success(_vk.CreateSampler(_device, &samplerInfo, null, out _textureSampler), "Failed to create texture sampler");
